@@ -1,0 +1,11 @@
+
+py -m PyInstaller --name "gestion_facturas" --onefile --windowed --clean main_qt.py
+py -m PyInstaller --name "alquiler_equipos" --onefile --windowed --clean main_qt.py
+
+
+py -m PyInstaller --name "gestion_facturas" --onefile --windowed --clean --add-data "c:\Users\servi\AppData\Local\Programs\Python\Python313\Lib\site-packages\ttkthemes\themes" --add-data "c:\Users\servi\AppData\Local\Programs\Python\Python313\Lib\site-packages\tkcalendar" --hidden-import "babel.numbers" --icon="icono.ico" main.py
+
+
+py -m PyInstaller --name "gestion_facturas" --onefile --windowed --clean --add-data "C:\Users\ZOEC CIVIL DESK\AppData\Local\Programs\Python\Python313\Lib\site-packages\ttkthemes\themes" --add-data "C:\Users\ZOEC CIVIL DESK\AppData\Local\Programs\Python\Python313\Lib\site-packages\tkcalendar" --hidden-import "babel.numbers" --icon="icono.ico" main.py
+
+py -m PyInstaller --name "gestion_facturas" --onefile --windowed --clean --add-data "C:\Users\ZOEC CIVIL DESK\AppData\Local\Programs\Python\Python313\Lib\site-packages\ttkthemes\themes;ttkthemes" --add-data "C:\Users\ZOEC CIVIL DESK\AppData\Local\Programs\Python\Python313\Lib\site-packages\tkcalendar;tkcalendar" --hidden-import "babel.numbers" --icon="icono.ico" main.py

@@ -1,0 +1,3821 @@
+Actuarás como mi asistente experto en programación Python, especializado en refactorización de código, diseño orientado a objetos, y desarrollo de interfaces gráficas con Tkinter y la base de datos SQLite.
+
+
+Contexto del Proyecto:
+
+Nuestro objetivo es tartar de corregir errores futuros, identificar errores y agregar funcionalidades faltantes
+
+Ahora, anadiremos mejoras a partir de los codigos que te suministrare:
+
+### Archivo: main.py
+
+
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from ttkthemes import ThemedTk
+from app_gui import MainApplication
+from logic import LogicController
+import config_manager # Importamos nuestro nuevo módulo
+
+def get_database_path():
+    """
+    Obtiene la ruta de la BD. Primero intenta desde el config,
+    si no, le pregunta al usuario.
+    """
+    db_path = config_manager.get_db_path()
+    
+    if not db_path:
+        messagebox.showinfo("Bienvenido", "Por favor, selecciona un archivo de base de datos (.db) para empezar a trabajar.")
+        # Ocultar la ventana raíz temporal de Tkinter
+        root_temp = tk.Tk()
+        root_temp.withdraw()
+        
+        db_path = filedialog.askopenfilename(
+            title="Selecciona o crea tu archivo de Base de Datos",
+            filetypes=[("Base de Datos SQLite", "*.db"), ("Todos los archivos", "*.*")]
+        )
+        root_temp.destroy()
+
+        if db_path:
+            config_manager.set_db_path(db_path)
+        else:
+            return None # El usuario canceló
+            
+    return db_path
+
+def main():
+    """Punto de entrada principal de la aplicación."""
+    db_path = get_database_path()
+
+    if not db_path:
+        print("No se seleccionó una base de datos. Cerrando aplicación.")
+        return
+
+    try:
+        logic_controller = LogicController(db_path)
+        root = ThemedTk(theme="arc")
+        app = MainApplication(root, logic_controller)
+        root.mainloop()
+    except Exception as e:
+        messagebox.showerror("Error Fatal", f"Ocurrió un error fatal al iniciar la aplicación: {e}")
+
+if __name__ == "__main__":
+    main()
+
+
+### Archivo: logic.py
+
+# logic.py
+import sqlite3
+import os
+import json
+import datetime
+from tkinter import simpledialog
+import re
+from utils import find_dropbox_folder
+
+class LogicController:
+    """
+    Maneja toda la lógica de negocio y la interacción con la base de datos.
+    """
+    def __init__(self, db_path):
+        """
+        Inicializa el controlador y establece la conexión con la base de datos.
+        """
+        self.db_path = db_path
+        self.conn = None
+        self._connect()
+        self._initialize_db()
+
+    def _connect(self):
+        """Establece la conexión a la base de datos SQLite."""
+        try:
+            self.conn = sqlite3.connect(self.db_path)
+            self.conn.row_factory = sqlite3.Row
+            print("Conexión a la base de datos establecida exitosamente.")
+        except sqlite3.Error as e:
+            print(f"Error al conectar con la base de datos: {e}")
+            self.conn = None
+
+
+    def _initialize_db(self):
+        """
+        Realiza migraciones y crea las tablas si no existen.
+        """
+        if not self.conn:
+            return
+        try:
+            cursor = self.conn.cursor()
+
+            # --- MIGRACIÓN: Añadir columnas de configuración a la tabla 'companies' ---
+            cursor.execute("PRAGMA table_info(companies);")
+            company_columns = [info['name'] for info in cursor.fetchall()]
+            if 'invoice_template_path' not in company_columns:
+                print("Ejecutando migración: Añadiendo 'invoice_template_path' a 'companies'...")
+                cursor.execute("ALTER TABLE companies ADD COLUMN invoice_template_path TEXT;")
+            if 'invoice_output_base_path' not in company_columns:
+                print("Ejecutando migración: Añadiendo 'invoice_output_base_path' a 'companies'...")
+                cursor.execute("ALTER TABLE companies ADD COLUMN invoice_output_base_path TEXT;")
+
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS companies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+                rnc TEXT UNIQUE, address TEXT, legacy_filename TEXT,
+                itbis_adelantado REAL DEFAULT 0.0
+            );''')
+            
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS invoices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL,
+                invoice_type TEXT NOT NULL, invoice_date TEXT NOT NULL,
+                imputation_date TEXT, invoice_number TEXT NOT NULL,
+                invoice_category TEXT, rnc TEXT, third_party_name TEXT,
+                currency TEXT, itbis REAL DEFAULT 0.0, total_amount REAL DEFAULT 0.0,
+                exchange_rate REAL DEFAULT 1.0, total_amount_rd REAL DEFAULT 0.0,
+                attachment_path TEXT,
+                FOREIGN KEY (company_id) REFERENCES companies (id)
+            );''')
+            
+            # <<-- NUEVA TABLA PARA LOS DETALLES DE LA FACTURA -->>
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS invoice_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                unit_price REAL NOT NULL,
+                FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+            );''')
+
+            # ... (resto de CREATE TABLE para third_parties, settings, etc.) ...
+            cursor.execute('''CREATE TABLE IF NOT EXISTS third_parties (id INTEGER PRIMARY KEY AUTOINCREMENT, rnc TEXT NOT NULL UNIQUE, name TEXT NOT NULL COLLATE NOCASE);''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);''')
+            # ... etc ...
+
+            self.conn.commit()
+            print("Base de datos inicializada y migrada correctamente.")
+        except sqlite3.Error as e:
+            print(f"Error al inicializar o migrar las tablas: {e}")
+            self.conn.rollback()
+
+# <<-- AÑADE ESTOS NUEVOS MÉTODOS AL FINAL DE LA CLASE LogicController -->>
+
+    def save_tax_calculation(self, calc_id, company_id, name, start_date, end_date, percent, details):
+        """Guarda o actualiza una configuración de cálculo de impuestos."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("BEGIN TRANSACTION")
+            
+            if calc_id: # Actualizar
+                cursor.execute("""
+                    UPDATE tax_calculations 
+                    SET name = ?, start_date = ?, end_date = ?, percent_to_pay = ?
+                    WHERE id = ?
+                """, (name, start_date, end_date, percent, calc_id))
+            else: # Insertar
+                creation_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute("""
+                    INSERT INTO tax_calculations (company_id, name, start_date, end_date, percent_to_pay, creation_date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (company_id, name, start_date, end_date, percent, creation_date))
+                calc_id = cursor.lastrowid
+
+            # Borrar detalles viejos e insertar los nuevos
+            cursor.execute("DELETE FROM tax_calculation_details WHERE calculation_id = ?", (calc_id,))
+            
+            details_to_insert = []
+            for invoice_id, state in details.items():
+                if state['selected']:
+                    retention_applied = 1 if state['retention'] else 0
+                    details_to_insert.append((calc_id, invoice_id, retention_applied))
+            
+            cursor.executemany("""
+                INSERT INTO tax_calculation_details (calculation_id, invoice_id, itbis_retention_applied)
+                VALUES (?, ?, ?)
+            """, details_to_insert)
+            
+            self.conn.commit()
+            return True, "Cálculo guardado exitosamente."
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            return False, f"Error al guardar el cálculo: {e}"
+
+    def get_tax_calculations(self, company_id):
+        """Obtiene la lista de cálculos guardados para una empresa."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id, name, creation_date FROM tax_calculations WHERE company_id = ? ORDER BY creation_date DESC", (company_id,))
+            return cursor.fetchall()
+        except sqlite3.Error as e:
+            print(f"Error al obtener cálculos: {e}")
+            return []
+
+    def get_tax_calculation_details(self, calculation_id):
+        """Obtiene todos los detalles de un cálculo específico."""
+        try:
+            cursor = self.conn.cursor()
+            # Obtener datos maestros del cálculo
+            cursor.execute("SELECT * FROM tax_calculations WHERE id = ?", (calculation_id,))
+            calc_data = cursor.fetchone()
+            if not calc_data: return None
+
+            # Obtener facturas y su estado de retención
+            cursor.execute("""
+                SELECT invoice_id, itbis_retention_applied 
+                FROM tax_calculation_details WHERE calculation_id = ?
+            """, (calculation_id,))
+            details = cursor.fetchall()
+            
+            return {"main": dict(calc_data), "details": {row['invoice_id']: bool(row['itbis_retention_applied']) for row in details}}
+        except sqlite3.Error as e:
+            print(f"Error al obtener detalles del cálculo: {e}")
+            return None
+
+    def delete_tax_calculation(self, calculation_id):
+        """Elimina un cálculo y todos sus detalles."""
+        try:
+            cursor = self.conn.cursor()
+            # ON DELETE CASCADE se encarga de borrar los detalles automáticamente
+            cursor.execute("DELETE FROM tax_calculations WHERE id = ?", (calculation_id,))
+            self.conn.commit()
+            return True, "Cálculo eliminado exitosamente."
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            return False, f"Error al eliminar el cálculo: {e}"
+        
+    def migrate_from_json(self, json_files):
+        """
+        Lee archivos JSON, inserta los datos de la empresa y sus facturas,
+        y puebla el directorio de terceros (third_parties).
+        """
+        if not self.conn:
+            return False, "Sin conexión a la base de datos."
+
+        cursor = self.conn.cursor()
+        
+        for file_path in json_files:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                filename = os.path.basename(file_path)
+                company_name_raw = filename.replace('facturas_', '').replace('.json', '')
+                company_name = ' '.join(word.capitalize() for word in company_name_raw.split('_'))
+
+                cursor.execute("SELECT id FROM companies WHERE name = ?", (company_name,))
+                company_row = cursor.fetchone()
+                
+                if company_row is None:
+                    print(f"Migrando nueva empresa: {company_name}")
+                    # (El código para insertar la empresa y sus facturas no cambia)
+                    itbis_adelantado = float(data.get('itbis_adelantado', 0.0))
+                    cursor.execute("INSERT INTO companies (name, legacy_filename, itbis_adelantado) VALUES (?, ?, ?)",(company_name, filename, itbis_adelantado))
+                    company_id = cursor.lastrowid
+                    for factura in data.get("facturas_emitidas", []):
+                        cursor.execute(
+                            """INSERT INTO invoices (company_id, invoice_type, invoice_date, imputation_date, invoice_number, invoice_category, rnc, third_party_name, currency, itbis, total_amount, exchange_rate, total_amount_rd)
+                            VALUES (?, 'emitida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (company_id, factura.get('fecha'), factura.get('fecha_imputacion'), factura.get('no_fact'), factura.get('tipo_factura'), factura.get('rnc'), factura.get('empresa'), factura.get('moneda'), factura.get('itbis', 0.0), factura.get('factura_total', 0.0), factura.get('tasa_conversion', 1.0), factura.get('monto_convertido_rd', factura.get('factura_total', 0.0)))
+                        )
+                    for factura in data.get("facturas_gastos", []):
+                        cursor.execute(
+                            """INSERT INTO invoices (company_id, invoice_type, invoice_date, imputation_date, invoice_number, rnc, third_party_name, currency, itbis, total_amount, exchange_rate, total_amount_rd)
+                            VALUES (?, 'gasto', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (company_id, factura.get('fecha'), factura.get('fecha_imputacion'), factura.get('no_fact'), factura.get('rnc'), factura.get('lugar_compra'), factura.get('moneda'), factura.get('itbis', 0.0), factura.get('factura_total', 0.0), factura.get('tasa_conversion', 1.0), factura.get('monto_convertido_rd', factura.get('factura_total', 0.0)))
+                        )
+
+                    # --- NUEVA SECCIÓN: Extraer y guardar los terceros ---
+                    third_parties_to_add = set()
+                    for f in data.get("facturas_emitidas", []):
+                        if f.get('rnc') and f.get('empresa'):
+                            third_parties_to_add.add((f['rnc'].strip(), f['empresa'].strip()))
+                    for f in data.get("facturas_gastos", []):
+                        if f.get('rnc') and f.get('lugar_compra'):
+                            third_parties_to_add.add((f['rnc'].strip(), f['lugar_compra'].strip()))
+                    
+                    # Insertar o actualizar cada tercero en la base de datos
+                    for rnc, name in third_parties_to_add:
+                        self.add_or_update_third_party(rnc, name)
+                    # --- FIN DE LA NUEVA SECCIÓN ---
+
+                else:
+                    print(f"La empresa {company_name} ya existe. Omitiendo migración para este archivo.")
+
+            except Exception as e:
+                self.conn.rollback()
+                return False, f"Error migrando el archivo {file_path}: {e}"
+
+        self.conn.commit()
+        return True, "Migración completada exitosamente."
+# En el archivo: logic.py
+
+    def get_all_companies(self):
+        """Recupera todas las empresas (id, name, rnc) de la base de datos."""
+        if not self.conn: return []
+        try:
+            cursor = self.conn.cursor()
+            # Añadimos la columna RNC a la consulta
+            cursor.execute("SELECT id, name, rnc FROM companies ORDER BY name ASC")
+            return cursor.fetchall()
+        except sqlite3.Error as e:
+            print(f"Error al obtener las empresas: {e}")
+            return []            
+
+    def get_dashboard_data(self, company_id, filter_month=None, filter_year=None, specific_date=None):
+        """
+        Obtiene facturas y calcula totales para el dashboard, aplicando filtros opcionales.
+        """
+        if not self.conn or company_id is None:
+            return None
+
+        try:
+            cursor = self.conn.cursor()
+            
+            # Construcción de la consulta SQL dinámica
+            query = "SELECT * FROM invoices WHERE company_id = ?"
+            params = [company_id]
+            
+            if specific_date:
+                # Si se provee una fecha específica, este filtro tiene prioridad
+                query += " AND invoice_date = ?"
+                params.append(specific_date.strftime('%Y-%m-%d'))
+            elif filter_month and filter_year:
+                # Filtros de mes y año
+                query += " AND strftime('%Y', invoice_date) = ? AND strftime('%m', invoice_date) = ?"
+                params.append(str(filter_year))
+                params.append(str(filter_month).zfill(2))
+
+            cursor.execute(query, params)
+            all_invoices = cursor.fetchall()
+
+            # El resto de la lógica de cálculo no cambia
+            emitted = [dict(row) for row in all_invoices if row['invoice_type'] == 'emitida']
+            expenses = [dict(row) for row in all_invoices if row['invoice_type'] == 'gasto']
+
+            total_ingresos = sum(f['total_amount_rd'] for f in emitted)
+            total_gastos = sum(f['total_amount_rd'] for f in expenses)
+            itbis_ingresos = sum(f['itbis'] * f['exchange_rate'] for f in emitted)
+            itbis_gastos = sum(f['itbis'] * f['exchange_rate'] for f in expenses)
+
+            return {
+                "all_transactions": sorted(all_invoices, key=lambda x: x['invoice_date'], reverse=True),
+                "summary": {
+                    "total_ingresos": total_ingresos, "total_gastos": total_gastos,
+                    "itbis_ingresos": itbis_ingresos, "itbis_gastos": itbis_gastos,
+                    "total_neto": total_ingresos - total_gastos,
+                    "itbis_neto": itbis_ingresos - itbis_gastos
+                }
+            }
+
+        except sqlite3.Error as e:
+            print(f"Error al obtener datos del dashboard: {e}")
+            return None
+
+    def close_connection(self):
+        """Cierra la conexión a la base de datos."""
+        if self.conn:
+            self.conn.close()
+            print("Conexión a la base de datos cerrada.")
+
+
+    def get_unique_invoice_years(self, company_id):
+        """
+        Recupera una lista de años únicos en los que una empresa tiene facturas.
+        """
+        if not self.conn or company_id is None:
+            return []
+        
+        try:
+            cursor = self.conn.cursor()
+            # La función strftime('%Y', ...) extrae el año de la fecha.
+            # DISTINCT asegura que cada año aparezca solo una vez.
+            query = "SELECT DISTINCT strftime('%Y', invoice_date) as year FROM invoices WHERE company_id = ? ORDER BY year DESC"
+            cursor.execute(query, (company_id,))
+            # Extraemos el valor de la columna 'year' para cada fila y lo convertimos a lista
+            years = [row['year'] for row in cursor.fetchall()]
+            return years
+        except sqlite3.Error as e:
+            print(f"Error al obtener años únicos: {e}")
+            return []
+        
+
+    def get_itbis_adelantado(self, company_id):
+        """Obtiene el ITBIS adelantado para una empresa específica."""
+        if not self.conn or company_id is None:
+            return 0.0
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT itbis_adelantado FROM companies WHERE id = ?", (company_id,))
+            result = cursor.fetchone()
+            return result['itbis_adelantado'] if result else 0.0
+        except sqlite3.Error as e:
+            print(f"Error al obtener ITBIS adelantado: {e}")
+            return 0.0
+
+    def update_itbis_adelantado(self, company_id, value):
+        """Actualiza el ITBIS adelantado para una empresa específica."""
+        if not self.conn or company_id is None:
+            return False
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("UPDATE companies SET itbis_adelantado = ? WHERE id = ?", (value, company_id))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Error al actualizar ITBIS adelantado: {e}")
+            return False
+        
+
+    def add_invoice(self, invoice_data, items_data):
+        """Añade una nueva factura y sus detalles, con chequeo de duplicados."""
+        if not self.conn:
+            return False, "Sin conexión a la base de datos."
+        
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("BEGIN TRANSACTION")
+
+            # Insertar la factura principal
+            cursor.execute(
+                """INSERT INTO invoices (company_id, invoice_type, invoice_date, imputation_date, invoice_number, invoice_category, rnc, third_party_name, currency, itbis, total_amount, exchange_rate, total_amount_rd, attachment_path)
+                VALUES (:company_id, :invoice_type, :invoice_date, :imputation_date, :invoice_number, :invoice_category, :rnc, :third_party_name, :currency, :itbis, :total_amount, :exchange_rate, :total_amount_rd, :attachment_path)""",
+                invoice_data
+            )
+            invoice_id = cursor.lastrowid
+            
+            # Insertar los detalles de la factura
+            if items_data:
+                items_to_insert = [(invoice_id, item['description'], item['quantity'], item['unit_price']) for item in items_data]
+                cursor.executemany("INSERT INTO invoice_items (invoice_id, description, quantity, unit_price) VALUES (?, ?, ?, ?)", items_to_insert)
+
+            self.conn.commit()
+            self.add_or_update_third_party(invoice_data['rnc'], invoice_data['third_party_name'])
+            success_message = "Factura registrada exitosamente."
+            return True, success_message
+
+        except sqlite3.IntegrityError as e:
+            self.conn.rollback()
+            if 'UNIQUE constraint failed' in str(e) and 'idx_unique_invoice' in str(e):
+                return False, "Error: Ya existe una factura con el mismo número para este RNC/Cédula."
+            return False, f"Error de base de datos: {e}"
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            return False, f"Error de base de datos: {e}"
+
+        
+    def get_currencies(self, company_id):
+        """
+        Devuelve la lista de monedas disponibles desde la base de datos.
+        El parámetro company_id se mantiene por compatibilidad pero no se usa actualmente.
+        """
+        if not self.conn:
+            return ["RD$", "USD"] # Fallback por si no hay conexión
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT name FROM currencies ORDER BY name")
+            return [row['name'] for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            print(f"Error al obtener monedas: {e}")
+            return ["RD$", "USD"] # Fallback en caso de error    
+
+    def search_third_parties(self, query, search_by='name'):
+        """Busca en el directorio de terceros por nombre o RNC."""
+        if not self.conn or len(query) < 2:
+            return []
+        try:
+            cursor = self.conn.cursor()
+            column = 'name' if search_by == 'name' else 'rnc'
+            
+            # Usamos LIKE para buscar coincidencias que empiecen con la consulta
+            sql_query = f"SELECT rnc, name FROM third_parties WHERE {column} LIKE ? LIMIT 10"
+            cursor.execute(sql_query, (f"{query}%",))
+            return [dict(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            print(f"Error al buscar terceros: {e}")
+            return []
+
+    def add_or_update_third_party(self, rnc, name):
+        """Añade un nuevo tercero o actualiza el nombre si el RNC ya existe."""
+        if not self.conn or not rnc or not name:
+            return
+        try:
+            cursor = self.conn.cursor()
+            # 'INSERT ... ON CONFLICT' es una forma eficiente de hacer un "upsert"
+            cursor.execute(
+                """INSERT INTO third_parties (rnc, name) VALUES (?, ?)
+                ON CONFLICT(rnc) DO UPDATE SET name=excluded.name""",
+                (rnc.strip(), name.strip())
+            )
+            self.conn.commit()
+        except sqlite3.Error as e:
+            print(f"Error al añadir o actualizar tercero: {e}")
+
+
+    def get_invoice_by_id(self, invoice_id):
+        """Recupera todos los datos de una única factura por su ID."""
+        if not self.conn or invoice_id is None:
+            return None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+        except sqlite3.Error as e:
+            print(f"Error al obtener la factura: {e}")
+            return None
+
+    def update_invoice(self, invoice_id, invoice_data):
+        """Actualiza una factura existente, con una validación de duplicados mejorada."""
+        if not self.conn:
+            return False, "Sin conexión a la base de datos."
+        
+        try:
+            cursor = self.conn.cursor()
+
+            # <<-- CORRECCIÓN CLAVE: Verificar si existe OTRA factura con los mismos datos -->>
+            # La cláusula "AND id != :invoice_id" es la que soluciona el problema.
+            cursor.execute(
+                """SELECT id FROM invoices 
+                   WHERE company_id = :company_id 
+                   AND rnc = :rnc 
+                   AND invoice_number = :invoice_number 
+                   AND id != :invoice_id""",
+                {
+                    "company_id": invoice_data.get('company_id'),
+                    "rnc": invoice_data.get('rnc'),
+                    "invoice_number": invoice_data.get('invoice_number'),
+                    "invoice_id": invoice_id
+                }
+            )
+            if cursor.fetchone():
+                return False, "Error: Ya existe otra factura con ese mismo número para este RNC/Cédula."
+
+            # Si no hay conflictos, proceder con la actualización
+            invoice_data['invoice_id'] = invoice_id
+            cursor.execute(
+                """UPDATE invoices SET
+                    invoice_date = :invoice_date, invoice_number = :invoice_number,
+                    invoice_category = :invoice_category, rnc = :rnc,
+                    third_party_name = :third_party_name, currency = :currency,
+                    itbis = :itbis, total_amount = :total_amount,
+                    exchange_rate = :exchange_rate, total_amount_rd = :total_amount_rd,
+                    attachment_path = :attachment_path
+                WHERE id = :invoice_id""",
+                invoice_data
+            )
+            
+            self.conn.commit()
+            self.add_or_update_third_party(invoice_data['rnc'], invoice_data['third_party_name'])
+            return True, "Factura actualizada exitosamente."
+
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            return False, f"Error de base de datos al actualizar: {e}"
+
+    def update_company(self, company_id, name, rnc, address, template_path, output_path):
+        """
+        Actualiza TODOS los datos de una empresa, con una validación de duplicados mejorada.
+        """
+        if not all([self.conn, company_id, name, rnc]):
+            return False, "Datos inválidos o sin conexión."
+        try:
+            cursor = self.conn.cursor()
+            
+            # <<-- CORRECCIÓN CLAVE: Verificar si existe OTRA empresa con el mismo nombre o RNC -->>
+            cursor.execute("SELECT id FROM companies WHERE (name = ? OR rnc = ?) AND id != ?", (name, rnc, company_id))
+            if cursor.fetchone():
+                return False, "Ya existe otra empresa con ese nuevo nombre o RNC."
+
+            # Si no hay conflictos, proceder con la actualización
+            cursor.execute(
+                """UPDATE companies SET 
+                   name = ?, rnc = ?, address = ?, 
+                   invoice_template_path = ?, invoice_output_base_path = ? 
+                   WHERE id = ?""",
+                (name, rnc, address, template_path, output_path, company_id)
+            )
+            self.conn.commit()
+            return True, "Empresa actualizada exitosamente."
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            return False, f"Error de base de datos: {e}"
+# AÑADE ESTE NUEVO MÉTODO AL FINAL DE LA CLASE
+    def get_invoice_items(self, invoice_id):
+        """Recupera todos los detalles de una factura por su ID."""
+        if not self.conn or invoice_id is None:
+            return []
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT description, quantity, unit_price FROM invoice_items WHERE invoice_id = ?", (invoice_id,))
+            return [dict(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            print(f"Error al obtener detalles de la factura: {e}")
+            return []
+                        
+    def delete_invoice(self, invoice_id):
+        """Elimina una factura de la base de datos por su ID."""
+        if not self.conn:
+            return False, "Sin conexión a la base de datos."
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+            self.conn.commit()
+            return True, "Factura eliminada exitosamente."
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            return False, f"Error de base de datos al eliminar: {e}"
+        
+
+    def get_monthly_report_data(self, company_id, month, year):
+        """
+        Obtiene los datos de facturas para un mes y año específicos para generar un reporte.
+        """
+        if not self.conn or company_id is None:
+            return None
+        
+        # Usamos el mismo método de filtrado que ya probamos
+        report_data = self.get_dashboard_data(company_id, filter_month=month, filter_year=year)
+        
+        if not report_data:
+            return None
+
+        # Separamos las listas para mayor claridad en el reporte
+        emitted_invoices = [dict(row) for row in report_data['all_transactions'] if row['invoice_type'] == 'emitida']
+        expense_invoices = [dict(row) for row in report_data['all_transactions'] if row['invoice_type'] == 'gasto']
+
+        return {
+            "summary": report_data['summary'],
+            "emitted_invoices": emitted_invoices,
+            "expense_invoices": expense_invoices
+        }
+    
+
+    def get_emitted_invoices_for_period(self, company_id, start_date, end_date):
+        """Obtiene todas las facturas emitidas para una empresa dentro de un rango de fechas."""
+        if not self.conn or not all([company_id, start_date, end_date]):
+            return []
+        try:
+            cursor = self.conn.cursor()
+            query = """
+                SELECT * FROM invoices 
+                WHERE company_id = ? 
+                AND invoice_type = 'emitida'
+                AND invoice_date BETWEEN ? AND ?
+                ORDER BY invoice_date
+            """
+            cursor.execute(query, (company_id, start_date, end_date))
+            return [dict(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            print(f"Error al obtener facturas emitidas por período: {e}")
+            return []
+        
+
+    def get_setting(self, key, default=None):
+        """Obtiene un valor de la tabla de configuración."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            result = cursor.fetchone()
+            return result['value'] if result else default
+        except sqlite3.Error as e:
+            print(f"Error al obtener ajuste '{key}': {e}")
+            return default
+
+    def set_setting(self, key, value):
+        """Guarda un valor en la tabla de configuración."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            print(f"Error al guardar ajuste '{key}': {e}")
+
+    def get_all_currencies(self):
+        """Obtiene todas las monedas de la base de datos."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT name FROM currencies ORDER BY name")
+            return [row['name'] for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            print(f"Error al obtener monedas: {e}")
+            return ["RD$", "USD"]
+
+    def save_currencies(self, currency_list):
+        """Borra y guarda la lista completa de monedas."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM currencies")
+            cursor.executemany("INSERT INTO currencies (name) VALUES (?)", [(c,) for c in currency_list])
+            self.conn.commit()
+        except sqlite3.Error as e:
+            print(f"Error al guardar monedas: {e}")
+
+
+    def get_report_by_third_party(self, company_id, third_party_rnc):
+        """Obtiene todas las facturas y totales para un cliente/proveedor específico."""
+        if not all([self.conn, company_id, third_party_rnc]):
+            return None
+
+        try:
+            cursor = self.conn.cursor()
+            query = "SELECT * FROM invoices WHERE company_id = ? AND rnc = ? ORDER BY invoice_date DESC"
+            cursor.execute(query, (company_id, third_party_rnc))
+            all_invoices = [dict(row) for row in cursor.fetchall()]
+
+            emitted = [f for f in all_invoices if f['invoice_type'] == 'emitida']
+            expenses = [f for f in all_invoices if f['invoice_type'] == 'gasto']
+
+            total_ingresos = sum(f['total_amount_rd'] for f in emitted)
+            total_gastos = sum(f['total_amount_rd'] for f in expenses)
+
+            return {
+                "summary": {
+                    "total_ingresos": total_ingresos,
+                    "total_gastos": total_gastos
+                },
+                "emitted_invoices": emitted,
+                "expense_invoices": expenses
+            }
+        except sqlite3.Error as e:
+            print(f"Error al obtener reporte por tercero: {e}")
+            return None
+
+
+
+    def reconnect(self):
+        """Cierra y reabre la conexión a la base de datos."""
+        self.close_connection()
+        self._connect()
+
+
+# En el archivo: logic.py
+
+    def add_company(self, name, rnc):
+        """Añade una nueva empresa con su RNC a la base de datos."""
+        if not self.conn or not name or not rnc:
+            return False, "Nombre y RNC son requeridos."
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("INSERT INTO companies (name, rnc) VALUES (?, ?)", (name, rnc))
+            self.conn.commit()
+            return True, "Empresa añadida exitosamente."
+        except sqlite3.IntegrityError:
+            self.conn.rollback()
+            return False, "Ya existe una empresa con ese nombre o RNC."
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            return False, f"Error de base de datos: {e}"
+
+# En el archivo: logic.py
+
+    def get_company_details(self, company_id):
+        """Recupera todos los detalles de una única empresa por su ID."""
+        if not self.conn or not company_id:
+            return None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM companies WHERE id = ?", (company_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+        except sqlite3.Error as e:
+            print(f"Error al obtener detalles de la empresa: {e}")
+            return None
+
+
+
+    def delete_company(self, company_id):
+        """Elimina una empresa y todas sus facturas asociadas."""
+        if not self.conn or not company_id:
+            return False, "ID de empresa inválido o sin conexión."
+        try:
+            cursor = self.conn.cursor()
+            # ¡Importante! Eliminar primero las facturas para mantener la integridad
+            cursor.execute("DELETE FROM invoices WHERE company_id = ?", (company_id,))
+            # Luego, eliminar la empresa
+            cursor.execute("DELETE FROM companies WHERE id = ?", (company_id,))
+            self.conn.commit()
+            return True, "Empresa y todos sus datos eliminados exitosamente."
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            return False, f"Error de base de datos: {e}"
+        
+
+    def ensure_attachment_folder_exists(self, company_name, for_date):
+        """
+        Asegura que la estructura de carpetas para una empresa y fecha exista.
+        Devuelve la ruta completa de la carpeta del mes.
+        """
+        base_path = self.get_setting('attachment_base_path')
+        if not base_path or not os.path.isdir(base_path):
+            return None 
+
+        sanitized_company_name = "".join(c for c in company_name if c not in '<>:"/\\|?*')
+        year_str = str(for_date.year)
+        month_str = f"{for_date.month:02d}"
+        
+        full_path = os.path.join(base_path, sanitized_company_name, year_str, month_str)
+        os.makedirs(full_path, exist_ok=True)
+        return full_path
+
+    def get_attachment_base_path(self):
+        """
+        Construye la ruta base completa para los adjuntos combinando
+        la ruta de Dropbox detectada y la subcarpeta configurada.
+        """
+        dropbox_path = find_dropbox_folder()
+        subfolder_name = self.get_setting('attachment_subfolder')
+
+        if dropbox_path and subfolder_name:
+            return os.path.join(dropbox_path, subfolder_name)
+        
+        return None
+    
+# En la clase LogicController del archivo logic.py
+
+    def get_next_ncf(self, company_id, prefix):
+        try:
+            cursor = self.conn.cursor()
+            
+            # Esta consulta ahora funcionará correctamente sobre los datos limpios
+            query = """
+                SELECT invoice_number FROM invoices 
+                WHERE company_id = ? AND invoice_type = 'emitida' AND invoice_number LIKE ? 
+                ORDER BY CAST(SUBSTR(invoice_number, 4) AS INTEGER) DESC LIMIT 1
+            """
+            cursor.execute(query, (company_id, f"{prefix}%"))
+            last_ncf = cursor.fetchone()
+
+            if not last_ncf:
+                return f"{prefix}00000001"
+
+            numeric_part = re.search(r'(\d+)$', last_ncf['invoice_number'])
+            if not numeric_part:
+                return f"{prefix}00000001" 
+
+            next_number = int(numeric_part.group(1)) + 1
+            return f"{prefix}{next_number:08d}"
+
+        except sqlite3.Error as e:
+            print(f"Error al obtener el siguiente NCF: {e}")
+            return f"{prefix}00000001"
+                
+    def get_invoice_output_path(self, company_id, ncf_type):
+        """
+        Construye la ruta de salida dinámica para una factura.
+        Ej: Dropbox/Mis Facturas/Facturas B01/2025/09/
+        """
+        details = self.get_company_details(company_id)
+        if not details or not details.get('invoice_output_base_path'):
+            return None # No hay carpeta base configurada
+
+        base_path = details['invoice_output_base_path']
+        today = datetime.date.today()
+        year = str(today.year)
+        month = f"{today.month:02d}"
+        
+        # Crear la ruta completa, incluyendo la carpeta del tipo de NCF y el mes
+        full_path = os.path.join(base_path, f"Facturas {ncf_type}", year, month)
+        
+        # Asegurarse de que la carpeta exista
+        os.makedirs(full_path, exist_ok=True)
+        
+        return full_path
+
+    # === Helpers recomendados (colócalos en tu LogicController) ===
+    def _as_dict(self, obj, columns=None):
+        """Normaliza obj a dict. Acepta dict, sqlite3.Row, tuple/list (con columns), str/otros."""
+        if obj is None:
+            return {}
+        if isinstance(obj, dict):
+            return obj
+        try:
+            import sqlite3
+            if isinstance(obj, sqlite3.Row):
+                return dict(obj)
+        except Exception:
+            pass
+        if isinstance(obj, (list, tuple)) and columns and len(columns) == len(obj):
+            return {k: v for k, v in zip(columns, obj)}
+        if hasattr(obj, "get"):  # por si es tipo mapeable
+            try:
+                return dict(obj)
+            except Exception:
+                pass
+        # último recurso: no crashear
+        return {"_raw": obj}
+
+    def _row_to_dict(self, row, cursor):
+        """Convierte un row de sqlite a dict usando cursor.description."""
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return row
+        try:
+            import sqlite3
+            if isinstance(row, sqlite3.Row):
+                return dict(row)
+        except Exception:
+            pass
+        if isinstance(row, (list, tuple)) and cursor and cursor.description:
+            cols = [d[0] for d in cursor.description]
+            return {k: v for k, v in zip(cols, row)}
+        return {"_raw": row}
+
+
+### Archivo: app_gui.py
+
+# app_gui.py
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog, scrolledtext
+import os
+from tkcalendar import DateEntry
+import datetime
+from tkinter import simpledialog
+from add_invoice_window import AddInvoiceWindow
+from report_window import ReportWindow
+from retention_calculator_window import RetentionCalculatorWindow
+from advanced_retention_window import AdvancedRetentionWindow # <-- AÑADE ESTA LÍNEA
+from tax_calculation_management_window import TaxCalculationManagementWindow # <--- AÑADE ESTA LÍNEA
+
+import shutil
+import datetime
+import config_manager
+from settings_window import SettingsWindow
+from third_party_report_window import ThirdPartyReportWindow
+from mini_calculator_window import MiniCalculator
+from company_management_window import CompanyManagementWindow
+from attachment_editor_window import AttachmentEditorWindow
+from invoice_generator_window import InvoiceGeneratorWindow # <-- AÑADIR ESTE
+
+class MainApplication:
+    """
+    Clase principal para la interfaz gráfica de usuario (GUI).
+    """
+    def __init__(self, root, controller):
+        self.root = root
+        self.controller = controller
+        self.companies_list = [] # Para guardar la lista de empresas con sus IDs
+        self.current_transactions = [] # Para guardar la lista de transacciones actual
+        self.months_map = {
+            'Enero': '01', 'Febrero': '02', 'Marzo': '03', 'Abril': '04', 
+            'Mayo': '05', 'Junio': '06', 'Julio': '07', 'Agosto': '08', 
+            'Septiembre': '09', 'Octubre': '10', 'Noviembre': '11', 'Diciembre': '12'
+        }
+        self.current_itbis_neto = 0.0
+        self.itbis_adelantado_var = tk.StringVar(value="0.0")
+        self.root.title("Asistente de Gestión de Facturas (v2.0)")
+        self.root.geometry("1200x700")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+        self._create_widgets()
+        self._create_menubar()
+        self._populate_company_selector()
+        self._update_window_title()
+
+    def _create_menubar(self):
+        """Crea la barra de menú principal de la aplicación."""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        # --- Menú Archivo ---
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Archivo", menu=file_menu)
+        file_menu.add_command(label="Cambiar Base de Datos...", command=self._change_database)
+        file_menu.add_separator()
+        file_menu.add_command(label="Crear Copia de Seguridad...", command=self._backup_database)
+        file_menu.add_command(label="Restaurar Copia de Seguridad...", command=self._restore_database)
+        file_menu.add_separator()
+        file_menu.add_command(label="Nueva Base de Datos...", command=self._create_new_database)
+        file_menu.add_command(label="Abrir Base de Datos...", command=self._change_database) # Cambiamos el texto para mayor claridad
+        file_menu.add_separator()
+        file_menu.add_command(label="Salir", command=self._on_closing)
+ 
+        
+        # --- Menú Reportes (NUEVO) ---
+        report_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Reportes", menu=report_menu)
+        report_menu.add_command(label="Reporte Mensual...", command=self._open_report_window)
+        report_menu.add_command(label="Reporte por Cliente/Proveedor...", command=self._open_third_party_report_window)
+
+        # --- Menú Opciones ---
+        options_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Opciones", menu=options_menu)
+        options_menu.add_command(label="Gestionar Empresas...", command=self._open_company_management_window)
+        options_menu.add_command(label="Configuración...", command=self._open_settings_window)
+        options_menu.add_separator()
+        theme_menu = tk.Menu(options_menu, tearoff=0)
+        options_menu.add_cascade(label="Cambiar Tema", menu=theme_menu)
+        available_themes = self.root.get_themes()
+        recommended_themes = ['arc', 'elegance', 'plastik', 'clearlooks', 'radiance', 'scidblue']
+        for theme in recommended_themes:
+            if theme in available_themes:
+                theme_menu.add_command(label=theme, command=lambda t=theme: self._change_theme(t))
+
+    def _create_new_database(self):
+        """Permite al usuario crear un nuevo archivo de base de datos."""
+        new_path = filedialog.asksaveasfilename(
+            title="Crear Nueva Base de Datos",
+            initialfile="nueva_base_de_datos.db",
+            defaultextension=".db",
+            filetypes=[("Base de Datos SQLite", "*.db"), ("Todos los archivos", "*.*")],
+            parent=self.root
+        )
+        if new_path:
+            self._switch_database(new_path)
+
+    def _create_widgets(self):
+            # --- Frame Superior ---
+            top_frame = ttk.Frame(self.root, padding="5 5 5 5")
+            top_frame.pack(side=tk.TOP, fill=tk.X)
+            ttk.Label(top_frame, text="Empresa Activa:", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=(0, 10))
+            self.company_selector_var = tk.StringVar()
+            self.company_selector = ttk.Combobox(top_frame, textvariable=self.company_selector_var, font=("Arial", 12), width=40, state="readonly")
+            self.company_selector.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+            self.company_selector.bind("<<ComboboxSelected>>", self._on_company_select)
+            self.migrate_button = ttk.Button(top_frame, text="Migrar Datos (JSON)", command=self._perform_migration)
+            self.migrate_button.pack(side=tk.RIGHT, padx=10)
+
+            # --- PanedWindow para la división principal ---
+            paned_window = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+            paned_window.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+            # --- Panel Izquierdo ---
+            left_pane = ttk.Frame(paned_window, relief=tk.SUNKEN)
+            paned_window.add(left_pane, width=350)
+            
+            menu_frame = ttk.LabelFrame(left_pane, text="Opciones de Facturación", padding=10)
+            menu_frame.pack(pady=10, padx=10, fill=tk.X)
+            self.btn_add_emitida = ttk.Button(menu_frame, text="Registrar Factura Emitida (Ingreso)", command=self._open_add_emitted_window)
+            self.btn_add_emitida.pack(pady=4, fill=tk.X, ipady=4)
+            self.btn_generar_factura_excel = ttk.Button(menu_frame, text="Generador de Facturas (Excel)", command=self._open_invoice_generator)
+            self.btn_generar_factura_excel.pack(pady=4, fill=tk.X, ipady=4)
+            self.btn_add_gasto = ttk.Button(menu_frame, text="Registrar Factura de Gasto", command=self._open_add_expense_window)
+            self.btn_add_gasto.pack(pady=4, fill=tk.X, ipady=4)
+            self.btn_generar_reporte = ttk.Button(menu_frame, text="Ver Reporte Mensual (Ventana)", command=self._open_report_window)
+            self.btn_generar_reporte.pack(pady=4, fill=tk.X, ipady=4)
+            
+            # <--- CORRECCIÓN: Se arregló el nombre de la variable y el .pack() subsecuente --->
+            self.btn_calculadora_retenciones = ttk.Button(menu_frame, text="Cálculo Impuestos y Retenciones", style="Accent.TButton", command=self._open_retention_calculator)
+            self.btn_calculadora_retenciones.pack(pady=4, fill=tk.X, ipady=4)
+            
+            # <--- CORRECCIÓN: Se añadió el botón de la mini-calculadora que faltaba --->
+            self.btn_mini_calc = ttk.Button(menu_frame, text="Mini Calculadora", command=self._open_mini_calculator)
+            self.btn_mini_calc.pack(pady=4, fill=tk.X, ipady=4)
+
+            style = ttk.Style(self.root)
+            style.configure("Accent.TButton", foreground="black", background="lightblue")
+            
+            self.btn_salir = ttk.Button(menu_frame, text="Salir", command=self._on_closing)
+            self.btn_salir.pack(pady=10, fill=tk.X, ipady=4)
+            
+            filter_frame = ttk.LabelFrame(left_pane, text="Filtros del Dashboard", padding=10)
+            filter_frame.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+            ttk.Label(filter_frame, text="Por Mes y Año:", font=("Arial", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+            ttk.Label(filter_frame, text="Mes:").grid(row=1, column=0, sticky="w", padx=5)
+            self.dashboard_mes_cb = ttk.Combobox(filter_frame, width=12, values=list(self.months_map.keys()), state="readonly")
+            self.dashboard_mes_cb.grid(row=1, column=1, padx=5, sticky="ew")
+            ttk.Label(filter_frame, text="Año:").grid(row=2, column=0, sticky="w", padx=5)
+            self.dashboard_anio_entry = ttk.Combobox(filter_frame, width=12, state="readonly")
+            self.dashboard_anio_entry.grid(row=2, column=1, padx=5, sticky="ew")
+            ttk.Label(filter_frame, text="Por Fecha Específica:", font=("Arial", 10, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 5))
+            self.date_filter_entry = DateEntry(filter_frame, width=12, date_pattern='yyyy-mm-dd', state="readonly")
+            self.date_filter_entry.grid(row=4, column=0, columnspan=2, sticky="w", padx=5)
+            self.date_filter_entry.set_date(None)
+            self.date_filter_entry.bind("<<DateEntrySelected>>", self._on_date_select)
+            ttk.Button(filter_frame, text="Aplicar Filtro Mes/Año", command=self._apply_month_year_filter).grid(row=5, column=0, columnspan=2, pady=5, sticky="ew")
+            ttk.Button(filter_frame, text="Ver Todo / Limpiar Filtros", command=self._clear_all_filters).grid(row=6, column=0, columnspan=2, pady=5, sticky="ew")
+
+            # --- Panel Derecho ---
+            right_pane = ttk.Frame(paned_window, relief=tk.SUNKEN)
+            paned_window.add(right_pane)
+
+            # -- Sub-panel de Resumen --
+            summary_frame = ttk.LabelFrame(right_pane, text="Resumen Financiero Actual", padding=15)
+            summary_frame.pack(padx=10, pady=10, fill=tk.X)
+            
+            self.summary_widgets = {}
+            summary_info = {
+                "Total Ingresos": {"row": 0, "col": 0}, "ITBIS Ingresos": {"row": 0, "col": 2},
+                "Total Gastos":   {"row": 1, "col": 0}, "ITBIS Gastos":   {"row": 1, "col": 2}
+            }
+            for text, props in summary_info.items():
+                ttk.Label(summary_frame, text=f"{text}:", font=("Arial", 11)).grid(row=props["row"], column=props["col"], sticky="w", padx=5, pady=3)
+                value_label = ttk.Label(summary_frame, text="RD$ 0.00", font=("Arial", 11, "bold"))
+                value_label.grid(row=props["row"], column=props["col"] + 1, sticky="e", padx=5, pady=3)
+                self.summary_widgets[text] = value_label
+
+            ttk.Label(summary_frame, text="ITBIS Adelantado (Mes Ant.):", font=("Arial", 11)).grid(row=2, column=0, sticky="w", padx=5, pady=3)
+            entry_widget = ttk.Entry(summary_frame, textvariable=self.itbis_adelantado_var, font=("Arial", 11, "bold"), width=15, justify='right')
+            entry_widget.grid(row=2, column=1, sticky="e", padx=5, pady=3)
+
+            ttk.Label(summary_frame, text="ITBIS a Pagar (Restante):", font=("Arial", 12, "bold")).grid(row=3, column=0, sticky="w", padx=5, pady=3)
+            itbis_pagar_label = ttk.Label(summary_frame, text="RD$ 0.00", font=("Arial", 12, "bold"))
+            itbis_pagar_label.grid(row=3, column=1, sticky="e", padx=5, pady=3)
+            self.summary_widgets["ITBIS a Pagar"] = itbis_pagar_label
+            
+            btn_calcular = ttk.Button(summary_frame, text="Calcular", style="Accent.TButton", command=self._recalculate_itbis_restante)
+            btn_calcular.grid(row=3, column=2, padx=(10, 5), pady=3, sticky="w")
+
+            ttk.Separator(summary_frame, orient='horizontal').grid(row=4, column=0, columnspan=4, sticky="ew", pady=8)
+            ttk.Label(summary_frame, text="ITBIS Neto:", font=("Arial", 12, "bold", "underline")).grid(row=5, column=0, sticky="w", padx=5, pady=3)
+            neto_label = ttk.Label(summary_frame, text="RD$ 0.00", font=("Arial", 12, "bold", "underline"))
+            neto_label.grid(row=5, column=1, sticky="e", padx=5, pady=3)
+            self.summary_widgets["ITBIS Neto"] = neto_label
+            
+            ttk.Label(summary_frame, text="Total Neto:", font=("Arial", 12, "bold", "underline")).grid(row=5, column=2, sticky="w", padx=5, pady=3)
+            total_neto_label = ttk.Label(summary_frame, text="RD$ 0.00", font=("Arial", 12, "bold", "underline"))
+            total_neto_label.grid(row=5, column=3, sticky="e", padx=5, pady=3)
+            self.summary_widgets["Total Neto"] = total_neto_label
+
+            summary_frame.columnconfigure(1, weight=1)
+            summary_frame.columnconfigure(3, weight=1)
+
+            # -- Sub-panel de Transacciones (AHORA CON TREEVIEW) --
+            trans_frame = ttk.LabelFrame(right_pane, text="Transacciones", padding=10)
+            trans_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+            # -- Filtro para la tabla --
+            filter_bar = ttk.Frame(trans_frame)
+            filter_bar.pack(fill=tk.X, pady=(0, 5))
+            ttk.Label(filter_bar, text="Mostrar:", font=("Arial", 10)).pack(side=tk.LEFT)
+            self.transaction_filter_var = tk.StringVar(value="Todos")
+            self.transaction_filter = ttk.Combobox(
+                filter_bar, textvariable=self.transaction_filter_var, 
+                values=["Todos", "Ingresos", "Gastos"], state="readonly", width=12
+            )
+            self.transaction_filter.pack(side=tk.LEFT, padx=5)
+            self.transaction_filter.bind("<<ComboboxSelected>>", self._apply_transaction_filter)
+
+            # -- Tabla (Treeview) --
+            columns = ('Fecha', 'Tipo', 'No. Fact.', 'Empresa', 'ITBIS (RD$)', 'Monto Original', 'Total RD$')
+            self.transactions_tree = ttk.Treeview(trans_frame, columns=columns, show='headings')
+            self.context_menu = tk.Menu(self.root, tearoff=0)
+            self.context_menu.add_command(label="Modificar Transacción", command=self._edit_selected_invoice)
+            self.context_menu.add_command(label="Editar Anexo...", command=self._open_attachment_editor)
+            self.context_menu.add_separator() 
+            
+            # <--- CORRECCIÓN: Se eliminó la línea duplicada --->
+            self.context_menu.add_command(label="Eliminar Transacción", command=self._delete_selected_invoice)
+            
+            self.transactions_tree.bind("<Button-3>", self._show_context_menu) # Clic derecho
+            self.transactions_tree.bind("<Double-1>", self._edit_selected_invoice) # Doble clic
+
+            # Definir encabezados y anchos de columna
+            self.transactions_tree.heading('Fecha', text='Fecha')
+            self.transactions_tree.column('Fecha', width=90, anchor='w')
+            self.transactions_tree.heading('Tipo', text='Tipo')
+            self.transactions_tree.column('Tipo', width=80, anchor='w')
+            self.transactions_tree.heading('No. Fact.', text='No. Factura')
+            self.transactions_tree.column('No. Fact.', width=120, anchor='w')
+            self.transactions_tree.heading('Empresa', text='Empresa')
+            self.transactions_tree.column('Empresa', width=250, anchor='w')
+            self.transactions_tree.heading('ITBIS (RD$)', text='ITBIS (RD$)')
+            self.transactions_tree.column('ITBIS (RD$)', width=100, anchor='e')
+            self.transactions_tree.heading('Monto Original', text='Monto Original')
+            self.transactions_tree.column('Monto Original', width=120, anchor='e')
+            self.transactions_tree.heading('Total RD$', text='Total (RD$)')
+            self.transactions_tree.column('Total RD$', width=120, anchor='e')
+            
+            # Scrollbar para la tabla
+            scrollbar = ttk.Scrollbar(trans_frame, orient=tk.VERTICAL, command=self.transactions_tree.yview)
+            self.transactions_tree.configure(yscrollcommand=scrollbar.set)
+            
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            self.transactions_tree.pack(fill=tk.BOTH, expand=True)
+
+            # Configurar colores de fila
+            self.transactions_tree.tag_configure('ingreso', background='#E8F8F5')
+            self.transactions_tree.tag_configure('gasto', background='#FDEDEC')
+            
+            self._set_menu_state("disabled")        
+    def _perform_migration(self):
+        file_paths = filedialog.askopenfilenames(
+            title="Selecciona los archivos JSON a migrar",
+            filetypes=[("Archivos JSON", "*.json"), ("Todos los archivos", "*.*")], parent=self.root
+        )
+        if not file_paths:
+            messagebox.showinfo("Cancelado", "La operación de migración fue cancelada.", parent=self.root)
+            return
+
+        confirm = messagebox.askyesno("Confirmar Migración", f"Se seleccionaron {len(file_paths)} archivos. ¿Deseas importarlos?", parent=self.root)
+        if confirm:
+            success, message = self.controller.migrate_from_json(file_paths)
+            if success:
+                messagebox.showinfo("Éxito", message, parent=self.root)
+                self._populate_company_selector()
+            else:
+                messagebox.showerror("Error de Migración", message, parent=self.root)
+
+    def _populate_company_selector(self):
+        self.companies_list = self.controller.get_all_companies()
+        company_names = [company['name'] for company in self.companies_list]
+        self.company_selector['values'] = company_names
+        if company_names:
+            self.company_selector.current(0)
+            self._on_company_select() # Cargar datos de la primera empresa al iniciar
+
+    def _on_company_select(self, event=None):
+        """Maneja la selección de una nueva empresa y refresca el dashboard."""
+        self._set_menu_state("normal")
+        
+        # --- LÓGICA AÑADIDA ---
+        # Asegura que la carpeta de adjuntos para el mes actual exista
+        selected_name = self.company_selector_var.get()
+        if selected_name:
+            self.controller.ensure_attachment_folder_exists(selected_name, datetime.date.today())
+        # --- FIN DE LA LÓGICA AÑADIDA ---
+
+        self._clear_all_filters() # Limpia filtros al cambiar de empresa
+
+    def _update_summary_panel(self, summary_data):
+        """Actualiza los widgets del panel de resumen financiero."""
+        # Guardamos el valor numérico del ITBIS Neto para usarlo en el cálculo
+        self.current_itbis_neto = summary_data['itbis_neto']
+        
+        # Actualizar labels
+        self.summary_widgets["Total Ingresos"].config(text=f"RD$ {summary_data['total_ingresos']:,.2f}", foreground="#006400")
+        self.summary_widgets["ITBIS Ingresos"].config(text=f"RD$ {summary_data['itbis_ingresos']:,.2f}", foreground="#006400")
+        self.summary_widgets["Total Gastos"].config(text=f"RD$ {summary_data['total_gastos']:,.2f}", foreground="#C70039")
+        self.summary_widgets["ITBIS Gastos"].config(text=f"RD$ {summary_data['itbis_gastos']:,.2f}", foreground="#C70039")
+        self.summary_widgets["Total Neto"].config(text=f"RD$ {summary_data['total_neto']:,.2f}", foreground="blue")
+        self.summary_widgets["ITBIS Neto"].config(text=f"RD$ {summary_data['itbis_neto']:,.2f}", foreground="blue")
+
+        # Obtener el ID de la empresa actual para buscar su ITBIS adelantado
+        selected_name = self.company_selector_var.get()
+        company_id = next((c['id'] for c in self.companies_list if c['name'] == selected_name), None)
+
+        if company_id:
+            itbis_adelantado = self.controller.get_itbis_adelantado(company_id)
+            self.itbis_adelantado_var.set(f"{itbis_adelantado:.2f}")
+
+        # Recalcular el ITBIS a pagar con los nuevos datos
+        self._recalculate_itbis_restante()
+
+    def _apply_transaction_filter(self, event=None):
+        """Filtra la lista de transacciones y llama a la función para poblar la tabla."""
+        filter_value = self.transaction_filter_var.get()
+        
+        if filter_value == "Ingresos":
+            filtered_list = [t for t in self.current_transactions if t['invoice_type'] == 'emitida']
+        elif filter_value == "Gastos":
+            filtered_list = [t for t in self.current_transactions if t['invoice_type'] == 'gasto']
+        else: # "Todos"
+            filtered_list = self.current_transactions
+            
+        self._populate_transactions_tree(filtered_list)
+
+
+
+    def _populate_transactions_tree(self, transactions):
+        """Limpia y puebla el Treeview con una lista de transacciones."""
+        for item in self.transactions_tree.get_children():
+            self.transactions_tree.delete(item)
+        
+        for trans in transactions:
+            itbis_rd = trans['itbis'] * trans['exchange_rate']
+            
+            # --- LÓGICA AÑADIDA ---
+            # Formatear el monto original con su moneda
+            monto_original_str = f"{trans['total_amount']:,.2f} {trans['currency']}"
+
+            row_values = (
+                trans['invoice_date'],
+                trans['invoice_type'].upper(),
+                trans['invoice_number'],
+                trans['third_party_name'],
+                f"{itbis_rd:,.2f}",
+                monto_original_str, # <--- Dato nuevo
+                f"{trans['total_amount_rd']:,.2f}"
+            )
+            
+            tag = 'ingreso' if trans['invoice_type'] == 'emitida' else 'gasto'
+            self.transactions_tree.insert('', tk.END, values=row_values, tags=(tag,), iid=trans['id'])
+
+
+    def _on_closing(self):
+        print("Cerrando la aplicación...")
+        self.controller.close_connection()
+        self.root.destroy()
+
+
+    def _placeholder(self):
+        """Función temporal para botones no implementados."""
+        messagebox.showinfo("Información", "Esta función aún no ha sido implementada.", parent=self.root)
+
+    def _set_menu_state(self, state):
+        """Habilita o deshabilita los botones del menú principal."""
+        self.btn_add_emitida.config(state=state)
+        self.btn_add_gasto.config(state=state)
+        self.btn_generar_reporte.config(state=state)
+        #self.btn_gestionar_transacciones.config(state=state)
+        self.btn_calculadora_retenciones.config(state=state)
+
+    def _apply_month_year_filter(self):
+        """Valida la entrada y llama a refrescar el dashboard con los filtros de mes/año."""
+        self.date_filter_entry.set_date(None) # <-- AÑADE ESTA LÍNEA
+        mes_nombre = self.dashboard_mes_cb.get()
+        anio_str = self.dashboard_anio_entry.get()
+
+        try:
+            if not mes_nombre or not anio_str:
+                raise ValueError("El mes y el año son requeridos.")
+            
+            # Traducir nombre del mes a número
+            mes_numero = self.months_map.get(mes_nombre)
+            anio = int(anio_str)
+
+            if not (mes_numero and 1900 < anio <= 2100):
+                raise ValueError("El mes o el año introducidos no son válidos.")
+
+            # Refrescamos el dashboard con los filtros
+            self._refresh_dashboard(filter_month=mes_numero, filter_year=anio)
+
+        except (ValueError, TypeError) as e:
+            messagebox.showerror("Error de Entrada", str(e), parent=self.root)
+
+    def _clear_all_filters(self):
+        """Limpia los widgets de filtro y refresca el dashboard para mostrar todos los datos."""
+        self.dashboard_mes_cb.set('')
+        self.dashboard_anio_entry.set('') # Usamos set('') para combobox
+        self.date_filter_entry.set_date(None)
+        
+        # Refresca el dashboard sin filtros
+        self._refresh_dashboard()
+
+
+    def _refresh_dashboard(self, filter_month=None, filter_year=None, specific_date=None):
+        """
+        Función central para obtener datos (filtrados o no) y actualizar toda la UI del dashboard.
+        """
+        # ... (el código para obtener company_id no cambia) ...
+        selected_name = self.company_selector_var.get()
+        if not selected_name:
+            return
+        company_id = None
+        for company in self.companies_list:
+            if company['name'] == selected_name:
+                company_id = company['id']
+                break
+        
+        if company_id is not None:
+            # Pasa el nuevo parámetro a la llamada del controlador
+            dashboard_data = self.controller.get_dashboard_data(
+                company_id,
+                filter_month=filter_month,
+                filter_year=filter_year,
+                specific_date=specific_date # <-- LÍNEA MODIFICADA
+            )
+            if dashboard_data:
+                self.current_transactions = dashboard_data["all_transactions"]
+                self._update_summary_panel(dashboard_data["summary"])
+                self._apply_transaction_filter()
+                self._update_year_selector(company_id)
+
+    def _update_year_selector(self, company_id):
+        """
+        Obtiene los años únicos para la empresa seleccionada y actualiza el combobox de años.
+        """
+        unique_years = self.controller.get_unique_invoice_years(company_id)
+        self.dashboard_anio_entry['values'] = unique_years
+        if unique_years:
+            # Opcional: seleccionar el año más reciente por defecto
+            self.dashboard_anio_entry.set(unique_years[0])
+        else:
+            self.dashboard_anio_entry.set('')
+
+
+    def _on_date_select(self, event=None):
+        """Maneja el evento de selección de fecha en el calendario."""
+        # Limpiar los otros filtros de fecha para evitar conflictos
+        self.dashboard_mes_cb.set('')
+        self.dashboard_anio_entry.set('')
+        
+        selected_date = self.date_filter_entry.get_date()
+        self._refresh_dashboard(specific_date=selected_date)
+
+
+    def _recalculate_itbis_restante(self):
+        """
+        Calcula el ITBIS a pagar y guarda el ITBIS adelantado en la base de datos.
+        """
+        try:
+            adelantado_str = self.itbis_adelantado_var.get()
+            itbis_adelantado = float(adelantado_str)
+
+            # Usamos la variable de estado en lugar de leer el label
+            itbis_neto = self.current_itbis_neto
+            itbis_a_pagar = itbis_neto - itbis_adelantado
+            
+            # Actualizamos la etiqueta de resultado
+            self.summary_widgets["ITBIS a Pagar"].config(
+                text=f"RD${itbis_a_pagar:,.2f}",
+                foreground="#C70039" if itbis_a_pagar >= 0 else "#006400"
+            )
+            
+            # Guardamos el nuevo valor en la base de datos
+            selected_name = self.company_selector_var.get()
+            company_id = next((c['id'] for c in self.companies_list if c['name'] == selected_name), None)
+            if company_id:
+                self.controller.update_itbis_adelantado(company_id, itbis_adelantado)
+
+        except (ValueError, TypeError):
+            self.summary_widgets["ITBIS a Pagar"].config(text="Error", fg="red")
+
+
+
+    def _open_add_emitted_window(self):
+        """Abre la ventana de registro para una factura emitida (ingreso)."""
+        if not self.company_selector_var.get():
+            messagebox.showwarning("Sin selección", "Por favor, selecciona una empresa activa.", parent=self.root)
+            return
+        AddInvoiceWindow(self, self.controller, self._save_invoice_callback, 'emitida')
+
+    def _open_add_expense_window(self):
+        """Abre la ventana de registro para una factura de gasto."""
+        if not self.company_selector_var.get():
+            messagebox.showwarning("Sin selección", "Por favor, selecciona una empresa activa.", parent=self.root)
+            return
+        AddInvoiceWindow(self, self.controller, self._save_invoice_callback, 'gasto')
+
+
+# ... (dentro de la clase MainApplication)
+
+    def _save_invoice_callback(self, parent_window, form_data, items_data, invoice_type, invoice_id=None):
+        """Callback genérico para guardar o actualizar facturas y sus detalles."""
+        try:
+            # --- Validación de campos generales (no cambia) ---
+            required_fields = {
+                "número_de_factura": "Número de Factura", 
+                "rnc_cédula": "RNC/Cédula",
+            }
+            third_party_key = 'lugar_de_compra_empresa' if invoice_type == 'gasto' else 'empresa_a_la_que_se_emitió'
+            required_fields[third_party_key] = "Empresa/Lugar"
+
+            for key, name in required_fields.items():
+                if not form_data.get(key) or not form_data.get(key).strip():
+                    messagebox.showerror("Campo Vacío", f"El campo '{name}' no puede estar vacío.", parent=parent_window)
+                    return
+
+            # --- Preparar datos para la capa de lógica ---
+            invoice_data = {
+                'invoice_type': invoice_type,
+                'invoice_date': form_data['fecha'].strftime('%Y-%m-%d'),
+                'imputation_date': datetime.date.today().strftime('%Y-%m-%d'),
+                'invoice_number': form_data['número_de_factura'].strip(),
+                'rnc': form_data['rnc_cédula'],
+                'third_party_name': form_data[third_party_key],
+                'currency': form_data['moneda'],
+                'itbis': float(form_data['itbis']),
+                'total_amount': float(form_data['factura_total']),
+                'attachment_path': form_data.get('attachment_path'),
+                'invoice_category': form_data.get('tipo_de_factura')
+            }
+            
+            # Lógica de tasa de cambio
+            invoice_data['exchange_rate'] = 1.0
+            if invoice_data['currency'] != "RD$":
+                rate_str = simpledialog.askstring("Tasa de Cambio", f"Tasa para {invoice_data['currency']} a RD$:", parent=parent_window, initialvalue="1.0")
+                if not rate_str: return
+                invoice_data['exchange_rate'] = float(rate_str)
+            
+            invoice_data['total_amount_rd'] = invoice_data['total_amount'] * invoice_data['exchange_rate']
+            
+            # <<-- INICIO DE PRINTS PARA DEPURACIÓN -->>
+            print("\n--- [DEBUG] En app_gui.py, antes de llamar a la lógica ---")
+            company_id = self.get_current_company_id()
+            print(f"  - ID de la empresa activa: {company_id}")
+            # <<-- FIN DE PRINTS PARA DEPURACIÓN -->>
+
+            # --- Llamada a la capa de lógica (con la corrección) ---
+            if invoice_id: # Modo Edición
+                # <<-- CORRECCIÓN CLAVE: Añadir el company_id a los datos antes de enviar -->>
+                invoice_data['company_id'] = company_id
+                success, message = self.controller.update_invoice(invoice_id, invoice_data, items_data)
+            else: # Modo Creación
+                invoice_data['company_id'] = company_id
+                success, message = self.controller.add_invoice(invoice_data, items_data)
+            
+            if success:
+                messagebox.showinfo("Éxito", message, parent=parent_window)
+                parent_window.destroy()
+                self._refresh_dashboard()
+            else:
+                messagebox.showerror("Error al Guardar", message, parent=parent_window)
+
+        except ValueError as e:
+            messagebox.showerror("Error de Datos", f"Verifica que los números sean válidos. Error: {e}", parent=parent_window)
+        except Exception as e:
+            messagebox.showerror("Error Inesperado", f"Ocurrió un error: {e}", parent=parent_window)
+
+
+    def _get_selected_invoice_id(self):
+        """Obtiene el ID de la base de datos para el item seleccionado en el Treeview."""
+        # .focus() nos devuelve el iid del item seleccionado, que es el ID de la factura
+        selected_item_id = self.transactions_tree.focus()
+        
+        if not selected_item_id:
+            return None
+        
+        # El iid es un string, lo convertimos a int para usarlo en la base de datos
+        try:
+            return int(selected_item_id)
+        except (ValueError, TypeError):
+            return None
+        
+
+    def _show_context_menu(self, event):
+        """Muestra el menú contextual y gestiona el estado de sus opciones."""
+        item_id = self.transactions_tree.identify_row(event.y)
+        if item_id:
+            self.transactions_tree.selection_set(item_id)
+            self.transactions_tree.focus(item_id)
+            
+            # --- LÓGICA AÑADIDA ---
+            # Revisar si el item seleccionado tiene un anexo para habilitar la opción
+            invoice = self.controller.get_invoice_by_id(int(item_id))
+            if invoice and invoice.get('invoice_type') == 'gasto' and invoice.get('attachment_path'):
+                self.context_menu.entryconfig("Editar Anexo...", state="normal")
+            else:
+                self.context_menu.entryconfig("Editar Anexo...", state="disabled")
+            # --- FIN DE LA LÓGICA ---
+            
+            self.context_menu.post(event.x_root, event.y_root)
+
+    def _edit_selected_invoice(self, event=None):
+        """Abre la ventana de edición para la factura seleccionada."""
+        invoice_id = self._get_selected_invoice_id()
+        if not invoice_id:
+            messagebox.showwarning("Sin Selección", "Por favor, selecciona una factura para modificar.", parent=self.root)
+            return
+        
+        existing_data = self.controller.get_invoice_by_id(invoice_id)
+        if existing_data:
+            invoice_type = existing_data['invoice_type']
+            AddInvoiceWindow(self, self.controller, self._save_invoice_callback, invoice_type, existing_data)
+
+    def _delete_selected_invoice(self):
+        """Elimina la factura seleccionada tras confirmación."""
+        invoice_id = self._get_selected_invoice_id()
+        if not invoice_id:
+            messagebox.showwarning("Sin Selección", "Por favor, selecciona una factura para eliminar.", parent=self.root)
+            return
+            
+        confirm = messagebox.askyesno(
+            "Confirmar Eliminación",
+            "¿Estás seguro de que deseas eliminar esta factura de forma permanente?",
+            icon='warning', parent=self.root
+        )
+        if confirm:
+            success, message = self.controller.delete_invoice(invoice_id)
+            if success:
+                messagebox.showinfo("Éxito", message)
+                self._refresh_dashboard()
+            else:
+                messagebox.showerror("Error", message)
+
+
+    def get_current_company_id(self):
+        """Devuelve el ID de la empresa actualmente seleccionada."""
+        selected_name = self.company_selector_var.get()
+        return next((c['id'] for c in self.companies_list if c['name'] == selected_name), None)
+
+    def _open_report_window(self):
+        """Abre la ventana de generación de reportes."""
+        if not self.company_selector_var.get():
+            messagebox.showwarning("Sin selección", "Por favor, selecciona una empresa activa.", parent=self.root)
+            return
+        ReportWindow(self, self.controller)
+
+    def _open_retention_calculator(self):
+        """Abre la ventana de GESTIÓN de cálculos de impuestos."""
+        if not self.company_selector_var.get():
+            messagebox.showwarning("Sin selección", "Por favor, selecciona una empresa activa.", parent=self.root)
+            return
+        TaxCalculationManagementWindow(self, self.controller)
+        
+    def _backup_database(self):
+        """Crea una copia de seguridad del archivo de la base de datos."""
+        try:
+            source_path = self.controller.db_path
+            if not os.path.exists(source_path):
+                messagebox.showerror("Error", "No se encuentra el archivo de la base de datos.", parent=self.root)
+                return
+
+            # Crear un nombre de archivo sugerido con fecha y hora
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filename = f"backup_{os.path.basename(source_path)}_{timestamp}.db"
+            
+            dest_path = filedialog.asksaveasfilename(
+                title="Guardar Copia de Seguridad como...",
+                initialfile=filename,
+                defaultextension=".db",
+                filetypes=[("Archivos de Base de Datos", "*.db"), ("Todos los archivos", "*.*")],
+                parent=self.root
+            )
+
+            if dest_path:
+                shutil.copy(source_path, dest_path)
+                messagebox.showinfo("Éxito", f"Copia de seguridad creada exitosamente en:\n{dest_path}", parent=self.root)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo crear la copia de seguridad: {e}", parent=self.root)
+
+    def _restore_database(self):
+        """Restaura la base de datos desde un archivo de copia de seguridad."""
+        confirm = messagebox.askyesno(
+            "Advertencia Crítica",
+            "Esta acción sobreescribirá TODOS los datos actuales con los de la copia de seguridad.\n\n"
+            "¿Estás seguro de que deseas continuar? Esta acción no se puede deshacer.",
+            icon='warning',
+            parent=self.root
+        )
+
+        if not confirm:
+            return
+
+        try:
+            backup_path = filedialog.askopenfilename(
+                title="Seleccionar Copia de Seguridad para Restaurar",
+                filetypes=[("Archivos de Base de Datos", "*.db"), ("Todos los archivos", "*.*")],
+                parent=self.root
+            )
+
+            if backup_path:
+                current_db_path = self.controller.db_path
+                
+                # Es crucial cerrar la conexión antes de sobreescribir el archivo
+                self.controller.close_connection()
+                
+                shutil.copy(backup_path, current_db_path)
+                
+                # Reconectar y refrescar toda la aplicación
+                self.controller.reconnect()
+                self._populate_company_selector() # Esto recargará todo el dashboard
+                
+                messagebox.showinfo("Éxito", "Restauración completada. La aplicación ha sido recargada con los nuevos datos.", parent=self.root)
+
+        except Exception as e:
+            messagebox.showerror("Error de Restauración", f"No se pudo restaurar la base de datos: {e}", parent=self.root)
+            # Intentar reconectar incluso si falla la restauración
+            self.controller.reconnect()
+
+
+    def _change_database(self):
+        """Permite al usuario seleccionar un nuevo archivo de base de datos existente."""
+        new_path = filedialog.askopenfilename(
+            title="Abrir Base de Datos",
+            filetypes=[("Base de Datos SQLite", "*.db"), ("Todos los archivos", "*.*")],
+            parent=self.root
+        )
+        if new_path:
+            self._switch_database(new_path)
+
+    def _open_settings_window(self):
+        """Abre la ventana de configuración."""
+        SettingsWindow(self, self.controller)
+
+    def _open_third_party_report_window(self):
+        """Abre la ventana del reporte por terceros."""
+        if not self.company_selector_var.get():
+            messagebox.showwarning("Sin selección", "Por favor, selecciona una empresa activa.", parent=self.root)
+            return
+        ThirdPartyReportWindow(self, self.controller)
+
+    def _switch_database(self, db_path):
+        """
+        Lógica central para cambiar la base de datos activa,
+        recargar la UI y guardar la configuración.
+        """
+        try:
+            # Guardar la nueva ruta en la configuración
+            config_manager.set_db_path(db_path)
+            
+            # Actualizar el controlador con la nueva ruta y reconectar
+            self.controller.db_path = db_path
+            self.controller.reconnect()
+            self.controller._initialize_db() # Crea las tablas si el archivo es nuevo
+            
+            # Limpiar y recargar toda la interfaz
+            self.company_selector.set('')
+            self._clear_all_filters()
+            self.current_transactions = []
+            self._apply_transaction_filter()
+            self._update_summary_panel({"total_ingresos": 0, "itbis_ingresos": 0, "total_gastos": 0, "itbis_gastos": 0, "total_neto": 0, "itbis_neto": 0})
+            self._populate_company_selector() # Recarga las empresas desde la nueva BD
+            
+            messagebox.showinfo("Éxito", "Se ha cargado la base de datos.", parent=self.root)
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo cargar la base de datos: {e}", parent=self.root)
+        try:
+            # ... (código para cambiar la BD y recargar la UI) ...
+            self._populate_company_selector()
+            
+            messagebox.showinfo("Éxito", "Se ha cargado la base de datos.", parent=self.root)
+            self._update_window_title() # <-- AÑADE ESTA LÍNEA AQUÍ
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo cargar la base de datos: {e}", parent=self.root)
+
+
+    def _update_window_title(self):
+        """Actualiza el título de la ventana para mostrar la BD activa."""
+        db_name = os.path.basename(self.controller.db_path)
+        self.root.title(f"Asistente de Gestión de Facturas (v2.0) - [{db_name}]")
+
+
+    def _open_company_management_window(self):
+        """Abre la ventana para gestionar las empresas."""
+        CompanyManagementWindow(self, self.controller)
+
+
+    def _open_attachment_editor(self):
+        """Abre el editor para el anexo de la factura seleccionada."""
+        invoice_id = self._get_selected_invoice_id()
+        if not invoice_id: return
+
+        invoice = self.controller.get_invoice_by_id(invoice_id)
+        relative_path = invoice.get('attachment_path')
+        
+        if not relative_path:
+            messagebox.showinfo("Información", "Esta factura de gasto no tiene ningún anexo guardado.", parent=self.root)
+            return
+
+        base_path = self.controller.get_attachment_base_path()
+        if not base_path:
+            messagebox.showerror("Error de Configuración", "La carpeta raíz de anexos no está configurada.", parent=self.root)
+            return
+            
+        full_path = os.path.join(base_path, relative_path)
+
+        if not os.path.exists(full_path):
+            messagebox.showerror("Error", f"No se encontró el archivo del anexo en la ruta esperada:\n{full_path}", parent=self.root)
+            return
+        
+        # Solo abrimos el editor para imágenes
+        if full_path.lower().endswith(('.png', '.jpg', '.jpeg')):
+            AttachmentEditorWindow(self.root, full_path)
+        else:
+            messagebox.showinfo("Información", f"La edición solo está disponible para imágenes.\nEste anexo es un archivo: {os.path.basename(full_path)}", parent=self.root)
+
+
+    def _open_mini_calculator(self):
+        """Abre la ventana de la mini calculadora."""
+        MiniCalculator(self.root)
+
+
+    def _open_invoice_generator(self):
+        """Abre la ventana del generador de facturas."""
+        company_id = self.get_current_company_id()
+        if not company_id:
+            messagebox.showwarning("Sin Selección", "Por favor, selecciona una empresa activa primero.", parent=self.root)
+            return
+        InvoiceGeneratorWindow(self.root, self.controller, company_id)
+
+### Archivo: add_invoice_window.py
+
+# Archivo: add_invoice_window.py (Actualizado con Visor)
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from tkcalendar import DateEntry
+import datetime
+import os
+import shutil
+from mini_calculator_window import MiniCalculator
+from attachment_editor_window import AttachmentEditorWindow # Importamos la nueva ventana
+from PIL import Image, ImageTk
+
+class AddInvoiceWindow(tk.Toplevel):
+    def __init__(self, parent, controller, save_callback, invoice_type, existing_data=None):
+        super().__init__(parent.root)
+        # ... (el __init__ se mantiene mayormente igual) ...
+        self.parent = parent
+        self.controller = controller
+        self.save_callback = save_callback
+        self.invoice_type = invoice_type
+        self.existing_data = existing_data
+        self.attachment_relative_path = tk.StringVar()
+        try:
+            img = Image.open("calculator_icon.png").resize((16, 16))
+            self.calc_icon = ImageTk.PhotoImage(img)
+        except FileNotFoundError:
+            self.calc_icon = None
+        mode = "Modificar" if existing_data else "Registrar"
+        title_text = "Gasto" if invoice_type == 'gasto' else "Ingreso"
+        self.title(f"{mode} {title_text}")
+        self.geometry("650x600")
+        self.grab_set()
+        self.entries = {}
+        frame_text = f"Datos de Factura de {title_text}"
+        third_party_label = "Lugar de Compra/Empresa:" if invoice_type == 'gasto' else "Empresa a la que se emitió:"
+        self._build_form(frame_text, third_party_label)
+        if existing_data:
+            self._populate_form()
+
+    def _build_form(self, frame_text, third_party_label):
+        form_frame = ttk.LabelFrame(self, text=frame_text, padding=(15, 10))
+        form_frame.pack(padx=15, pady=15, fill="both", expand=True)
+
+        # --- NUEVO BOTÓN PARA CARGAR Y VER ANEXO ---
+        if self.invoice_type == 'gasto':
+            ttk.Button(form_frame, text="Cargar y Ver Anexo para Imputar Datos...", command=self._load_and_show_attachment, style="Accent.TButton").grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 15))
+        
+        fields = {"Fecha:": (DateEntry, {'width': 18, 'date_pattern': 'yyyy-mm-dd', 'state': 'readonly'})}
+        if self.invoice_type == 'emitida':
+            fields["Tipo de Factura:"] = (ttk.Combobox, {'values': ["Factura Privada", "Gubernamental", "Exenta", "Consumo"], 'state': 'readonly'})
+        fields.update({
+            "Número de Factura:": (ttk.Entry, {}), "Moneda:": (ttk.Combobox, {'values': self.controller.get_all_currencies(), 'state': 'readonly'}),
+            "RNC/Cédula:": (ttk.Entry, {}), third_party_label: (ttk.Entry, {})
+        })
+        
+        row_index = 1 # Empezamos en la fila 1 por el nuevo botón
+        for label_text, (widget_class, opts) in fields.items():
+            ttk.Label(form_frame, text=label_text).grid(row=row_index, column=0, columnspan=2, padx=5, pady=6, sticky="w")
+            widget = widget_class(form_frame, **opts)
+            widget.grid(row=row_index, column=2, columnspan=2, padx=5, pady=6, sticky="ew")
+            key = label_text.replace(":", "").replace(" ", "_").replace("/", "_").lower()
+            self.entries[key] = widget
+            if isinstance(widget, ttk.Combobox) and not self.existing_data: widget.set(opts['values'][0])
+            row_index += 1
+        
+        # (El resto del _build_form se mantiene igual, con la sección de adjuntar al final)
+        self.suggestion_listbox = tk.Listbox(form_frame, height=4)
+        self.suggestion_listbox.grid(row=row_index, column=2, columnspan=2, sticky="nsew", padx=5); self.suggestion_listbox.grid_remove()
+        row_index += 1
+        numeric_fields = {"ITBIS:": 'itbis', "Factura Total:": 'factura_total'}
+        for label, key in numeric_fields.items():
+            ttk.Label(form_frame, text=label).grid(row=row_index, column=0, columnspan=2, padx=5, pady=6, sticky="w")
+            entry = ttk.Entry(form_frame)
+            entry.grid(row=row_index, column=2, padx=5, pady=6, sticky="ew")
+            self.entries[key] = entry
+            btn_opts = {'command': lambda e=entry: self._open_mini_calc(e)}
+            if self.calc_icon: btn_opts['image'] = self.calc_icon
+            else: btn_opts.update({'text': '...', 'width': 3})
+            ttk.Button(form_frame, **btn_opts).grid(row=row_index, column=3, padx=(0, 5))
+            row_index += 1
+        if self.invoice_type == 'gasto':
+            ttk.Separator(form_frame, orient='horizontal').grid(row=row_index, column=0, columnspan=4, sticky="ew", pady=10)
+            row_index += 1
+            ttk.Label(form_frame, text="Comprobante Adjunto:").grid(row=row_index, column=0, columnspan=2, sticky="w", padx=5)
+            self.attachment_label = ttk.Label(form_frame, textvariable=self.attachment_relative_path, font=("Arial", 8, "italic"), foreground="blue", wraplength=350)
+            self.attachment_label.grid(row=row_index, column=2, sticky="ew", padx=5)
+            row_index += 1
+            btn_frame = ttk.Frame(form_frame)
+            btn_frame.grid(row=row_index, column=2, columnspan=2, sticky="w", padx=5, pady=5)
+            ttk.Button(btn_frame, text="Adjuntar sin ver...", command=self._attach_file).pack(side="left")
+            ttk.Button(btn_frame, text="Quitar", command=lambda: self.attachment_relative_path.set("")).pack(side="left", padx=5)
+            row_index += 1
+
+        self.entries['rnc_cédula'].bind("<KeyRelease>", lambda e: self._on_keyup(e, 'rnc'))
+        self.entries[third_party_label.replace(":", "").replace(" ", "_").replace("/", "_").lower()].bind("<KeyRelease>", lambda e: self._on_keyup(e, 'name'))
+        self.suggestion_listbox.bind("<<ListboxSelect>>", lambda e, lbl=third_party_label: self._on_suggestion_select(e, lbl))
+        form_frame.columnconfigure(2, weight=1)
+        save_button = ttk.Button(form_frame, text="Guardar Cambios", command=self._on_save)
+        save_button.grid(row=row_index, column=0, columnspan=4, pady=20, ipady=5)
+
+# En el archivo: add_invoice_window.py
+
+    def _process_attachment(self, source_path):
+        """Función centralizada para copiar archivo y devolver la ruta completa."""
+        try:
+            active_company_name = self.parent.company_selector_var.get()
+            invoice_date = self.entries['fecha'].get_date()
+            destination_folder = self.controller.ensure_attachment_folder_exists(active_company_name, invoice_date)
+            
+            if not destination_folder:
+                messagebox.showerror("Error de Configuración", "No se pudo determinar la carpeta de destino.\n\nAsegúrate de haber configurado la 'Carpeta de Destino' en Configuración.", parent=self)
+                return None
+
+            filename = os.path.basename(source_path)
+            destination_path = os.path.join(destination_folder, filename)
+            
+            if os.path.exists(destination_path) and not messagebox.askyesno("Archivo Duplicado", f"El archivo '{filename}' ya existe.\n¿Deseas sobreescribirlo?", parent=self):
+                return None
+            
+            shutil.copy(source_path, destination_path)
+            
+            base_path = self.controller.get_setting('attachment_base_path')
+
+            # --- LÍNEAS DE DEPURACIÓN AÑADIDAS ---
+            print(f"[DEBUG] Ruta de Destino Completa: {destination_path}")
+            print(f"[DEBUG] Carpeta Raíz (Base): {base_path}")
+            # --- FIN DE LAS LÍNEAS DE DEPURACIÓN ---
+
+            relative_path = os.path.relpath(destination_path, base_path)
+            self.attachment_relative_path.set(relative_path.replace("\\", "/"))
+            return destination_path
+            
+        except Exception as e:
+            messagebox.showerror("Error al Adjuntar", f"No se pudo copiar el archivo: {e}", parent=self)
+            return None
+
+
+    def _load_and_show_attachment(self):
+        # Obtenemos la carpeta de descargas configurada
+        initial_dir = self.controller.get_setting('downloads_folder_path')
+        
+        source_path = filedialog.askopenfilename(
+            title="Selecciona el comprobante para ver y adjuntar",
+            filetypes=[("Imágenes", "*.jpg *.jpeg *.png")],
+            initialdir=initial_dir # <-- AÑADIMOS ESTO
+        )
+        if not source_path: return
+        
+        full_destination_path = self._process_attachment(source_path)
+        if full_destination_path:
+            AttachmentEditorWindow(self, full_destination_path)
+    
+    def _attach_file(self):
+        # Obtenemos la carpeta de descargas configurada
+        initial_dir = self.controller.get_setting('downloads_folder_path')
+
+        source_path = filedialog.askopenfilename(
+            title="Selecciona el comprobante para adjuntar",
+            filetypes=[("Comprobantes", "*.jpg *.jpeg *.png *.pdf")],
+            initialdir=initial_dir # <-- AÑADIMOS ESTO
+        )
+        if not source_path: return
+        self._process_attachment(source_path)
+
+    def _populate_form(self):
+        # ... (código existente para poblar los campos no cambia)
+        data = self.existing_data; year, month, day = map(int, data['invoice_date'].split('-')); self.entries['fecha'].set_date(datetime.date(year, month, day))
+        self.entries['número_de_factura'].insert(0, data['invoice_number']); self.entries['rnc_cédula'].insert(0, data['rnc']); self.entries['itbis'].insert(0, data['itbis']); self.entries['factura_total'].insert(0, data['total_amount']); self.entries['moneda'].set(data['currency'])
+        if self.invoice_type == 'emitida':
+            self.entries['tipo_de_factura'].set(data['invoice_category']); self.entries['empresa_a_la_que_se_emitió'].insert(0, data['third_party_name'])
+        else:
+            self.entries['lugar_de_compra_empresa'].insert(0, data['third_party_name'])
+            if data.get('attachment_path'): self.attachment_relative_path.set(data['attachment_path'])
+    def _on_save(self):
+        form_data = {key: widget.get() for key, widget in self.entries.items()}; form_data['fecha'] = self.entries['fecha'].get_date()
+        if self.invoice_type == 'gasto': form_data['attachment_path'] = self.attachment_relative_path.get()
+        invoice_id = self.existing_data['id'] if self.existing_data else None
+        self.save_callback(self, form_data, self.invoice_type, invoice_id)
+    def _open_mini_calc(self, target_entry): MiniCalculator(self, target_entry)
+    def _on_keyup(self, event, search_by):
+        query = event.widget.get()
+        if len(query) < 2: self.suggestion_listbox.grid_remove(); return
+        results = self.controller.search_third_parties(query, search_by=search_by)
+        self.suggestion_listbox.delete(0, tk.END)
+        if results:
+            self.suggestion_listbox.grid(); [self.suggestion_listbox.insert(tk.END, f"{i['rnc']} - {i['name']}") for i in results]
+        else: self.suggestion_listbox.grid_remove()
+    def _on_suggestion_select(self, event, third_party_label_text):
+        if not self.suggestion_listbox.curselection(): return
+        selection = self.suggestion_listbox.get(self.suggestion_listbox.curselection()); rnc, name = selection.split(' - ', 1)
+        key = third_party_label_text.replace(":", "").replace(" ", "_").replace("/", "_").lower()
+        self.entries['rnc_cédula'].delete(0, tk.END); self.entries['rnc_cédula'].insert(0, rnc)
+        self.entries[key].delete(0, tk.END); self.entries[key].insert(0, name)
+        self.suggestion_listbox.grid_remove()
+
+### Archivo: company_management_window.py
+
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+
+class CompanyManagementWindow(tk.Toplevel):
+    def __init__(self, parent, controller):
+        super().__init__(parent.root)
+        self.parent = parent
+        self.controller = controller
+        self.title("Gestionar Empresas")
+        self.geometry("850x450")
+        self.grab_set()
+
+        self.selected_company_id = None
+        self._build_ui()
+        self._load_companies()
+
+    def _build_ui(self):
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Frame for the list of companies
+        list_frame = ttk.LabelFrame(main_frame, text="Empresas Registradas", padding=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        columns = ('name', 'rnc')
+        self.tree = ttk.Treeview(list_frame, columns=columns, show='headings')
+        self.tree.heading('name', text='Nombre de la Empresa')
+        self.tree.heading('rnc', text='RNC')
+        self.tree.column('rnc', width=150)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Frame for the editing/creation form
+        form_frame = ttk.LabelFrame(main_frame, text="Detalles y Configuración de Facturación", padding=10)
+        form_frame.pack(fill=tk.X, pady=10)
+
+        self.entries = {}
+        fields = {
+            "Nombre:": "name", "RNC:": "rnc", "Dirección:": "address",
+            "Ruta de Plantilla (Factura):": "invoice_template_path",
+            "Carpeta Base de Salida (Facturas):": "invoice_output_base_path"
+        }
+        
+        row = 0
+        for label, key in fields.items():
+            ttk.Label(form_frame, text=label).grid(row=row, column=0, sticky="w", padx=5, pady=3)
+            entry = ttk.Entry(form_frame, width=60)
+            entry.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
+            self.entries[key] = entry
+            
+            # Add "Browse..." buttons for path fields
+            if "path" in key:
+                is_file = "template" in key
+                cmd = lambda k=key, f=is_file: self._browse_path(k, f)
+                ttk.Button(form_frame, text="Examinar...", command=cmd).grid(row=row, column=2, padx=5)
+            row += 1
+            
+        form_frame.columnconfigure(1, weight=1)
+
+        # Frame for action buttons
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill=tk.X, pady=(10, 0))
+
+        ttk.Button(buttons_frame, text="Nuevo", command=self._clear_fields).pack(side=tk.LEFT)
+        ttk.Button(buttons_frame, text="Guardar Cambios", style="Accent.TButton", command=self._save_company).pack(side=tk.LEFT, padx=10)
+        ttk.Button(buttons_frame, text="Eliminar Empresa", command=self._delete_company).pack(side=tk.RIGHT)
+
+    def _load_companies(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        companies = self.controller.get_all_companies()
+        for company in companies:
+            rnc_value = company['rnc'] if company['rnc'] is not None else ''
+            self.tree.insert('', 'end', iid=company['id'], values=(company['name'], rnc_value))
+
+    def _on_select(self, event=None):
+        selected_items = self.tree.selection()
+        if not selected_items: return
+        
+        self.selected_company_id = int(selected_items[0])
+        details = self.controller.get_company_details(self.selected_company_id)
+        if not details: return
+
+        for key, entry in self.entries.items():
+            entry.delete(0, tk.END)
+            value = details.get(key)
+            if value is not None:
+                entry.insert(0, str(value))
+            
+    def _clear_fields(self):
+        self.selected_company_id = None
+        self.tree.selection_remove(self.tree.selection())
+        for entry in self.entries.values():
+            entry.delete(0, tk.END)
+        self.entries['name'].focus()
+
+    def _browse_path(self, key, is_file):
+        if is_file:
+            path = filedialog.askopenfilename(title="Seleccionar Plantilla de Factura", filetypes=[("Archivos de Excel", "*.xlsx")])
+        else:
+            path = filedialog.askdirectory(title="Seleccionar Carpeta Base para Guardar Facturas")
+        
+        if path:
+            self.entries[key].delete(0, tk.END)
+            self.entries[key].insert(0, path)
+
+    def _save_company(self):
+        name = self.entries['name'].get()
+        rnc = self.entries['rnc'].get()
+        address = self.entries['address'].get()
+        template_path = self.entries['invoice_template_path'].get()
+        output_path = self.entries['invoice_output_base_path'].get()
+
+        if not name or not rnc:
+            messagebox.showerror("Error", "El Nombre y el RNC son obligatorios.", parent=self)
+            return
+
+        if self.selected_company_id: # Update existing company
+            success, msg = self.controller.update_company(
+                self.selected_company_id, name, rnc, address, template_path, output_path
+            )
+        else: # Create a new one
+            success, msg = self.controller.add_company(name, rnc)
+            if success:
+                # If created, reload to get its ID and then save additional data
+                self._load_companies()
+                new_company = next((c for c in self.controller.get_all_companies() if c['name'] == name), None)
+                if new_company:
+                    # Call update to save address and paths
+                    success, msg = self.controller.update_company(
+                        new_company['id'], name, rnc, address, template_path, output_path
+                    )
+        
+        if success:
+            messagebox.showinfo("Éxito", "Los datos de la empresa se guardaron correctamente.", parent=self)
+        else:
+            messagebox.showerror("Error al Guardar", msg, parent=self)
+        
+        self._load_companies()
+        self.parent._populate_company_selector() # Refresh the list in the main window
+
+    def _delete_company(self):
+        if not self.selected_company_id:
+            messagebox.showwarning("Sin Selección", "Selecciona una empresa para eliminar.", parent=self)
+            return
+            
+        confirm = messagebox.askyesno("Confirmar Eliminación", "¿Estás seguro de que deseas eliminar esta empresa y TODAS sus facturas? Esta acción no se puede deshacer.", icon='warning', parent=self)
+        if confirm:
+            success, msg = self.controller.delete_company(self.selected_company_id)
+            if success:
+                messagebox.showinfo("Éxito", msg, parent=self)
+                self._clear_fields()
+                self._load_companies()
+                self.parent._populate_company_selector()
+            else:
+                messagebox.showerror("Error", msg, parent=self)
+
+### Archivo: invoice_generator_window.py
+
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+from tkcalendar import DateEntry
+import invoice_filler
+import os
+from datetime import date
+
+# Tasas y tipos de NCF
+ITBIS_RATE = 0.18
+NCF_TYPES = {
+    "Crédito Fiscal (B01)": "B01",
+    "Consumidor Final (B02)": "B02",
+    "Gubernamental (B15)": "B15",
+    "Régimen Especial (B14)": "B14",
+    "Nota de Crédito (B04)": "B04",
+}
+
+class InvoiceGeneratorWindow(tk.Toplevel):
+    def __init__(self, parent, controller, company_id):
+        super().__init__(parent)
+        self.parent = parent
+        self.controller = controller
+        self.company_id = company_id
+        
+        self.apply_itbis = tk.BooleanVar(value=True)
+        self.ncf_type_var = tk.StringVar()
+        self.ncf_number_var = tk.StringVar()
+        
+        self.title("Generador de Facturas Automatizado")
+        self.geometry("900x750")
+        self.grab_set()
+
+        self._load_company_settings()
+        if not self.winfo_exists(): return # Cierra si la carga falla
+        
+        self._build_ui()
+        
+        self.ncf_type_var.set(list(NCF_TYPES.keys())[0])
+        self._update_ncf_sequence()
+
+    def _load_company_settings(self):
+        company_details = self.controller.get_company_details(self.company_id)
+        self.company_template_path = company_details.get('invoice_template_path')
+        self.company_output_base_path = company_details.get('invoice_output_base_path')
+
+        if not self.company_template_path or not self.company_output_base_path:
+            messagebox.showerror(
+                "Configuración Incompleta",
+                "La empresa activa no tiene una plantilla de factura o una carpeta de salida configurada.\n\n"
+                "Por favor, ve a 'Opciones -> Gestionar Empresas' para configurarla.",
+                parent=self
+            )
+            self.destroy()
+
+    def _build_ui(self):
+        invoice_details_frame = ttk.LabelFrame(self, text="1. Datos de la Factura", padding=10)
+        invoice_details_frame.pack(padx=10, pady=10, fill=tk.X)
+
+        ttk.Label(invoice_details_frame, text="Tipo de NCF:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ncf_combo = ttk.Combobox(invoice_details_frame, textvariable=self.ncf_type_var, values=list(NCF_TYPES.keys()), state="readonly", width=25)
+        ncf_combo.grid(row=0, column=1, columnspan=2, padx=5, sticky="ew")
+        ncf_combo.bind("<<ComboboxSelected>>", self._update_ncf_sequence)
+
+        ttk.Label(invoice_details_frame, text="NCF Asignado:").grid(row=0, column=3, sticky="w", padx=5)
+        ttk.Entry(invoice_details_frame, textvariable=self.ncf_number_var, state="readonly", width=20).grid(row=0, column=4, padx=5)
+        
+        ttk.Label(invoice_details_frame, text="Fecha:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        self.invoice_date = DateEntry(invoice_details_frame, date_pattern='yyyy-mm-dd', width=12)
+        self.invoice_date.set_date(date.today())
+        self.invoice_date.grid(row=1, column=1, padx=5)
+        
+        ttk.Label(invoice_details_frame, text="Vencimiento:").grid(row=1, column=2, sticky="w", padx=5)
+        self.invoice_due_date = DateEntry(invoice_details_frame, date_pattern='yyyy-mm-dd', width=12)
+        self.invoice_due_date.grid(row=1, column=3, padx=5)
+        
+        client_frame = ttk.LabelFrame(self, text="2. Datos del Cliente", padding=10)
+        client_frame.pack(padx=10, pady=5, fill=tk.X)
+        ttk.Label(client_frame, text="RNC/Cédula:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        self.client_rnc = ttk.Entry(client_frame); self.client_rnc.grid(row=0, column=1, sticky="ew", padx=5)
+        ttk.Label(client_frame, text="Nombre/Razón Social:").grid(row=0, column=2, sticky="w", padx=5)
+        self.client_name = ttk.Entry(client_frame); self.client_name.grid(row=0, column=3, sticky="ew", padx=5)
+        self.suggestion_listbox = tk.Listbox(client_frame, height=4); self.suggestion_listbox.grid(row=1, column=1, columnspan=3, sticky="nsew", padx=5, pady=(2,0)); self.suggestion_listbox.grid_remove() 
+        self.client_rnc.bind("<KeyRelease>", lambda e: self._on_keyup(e, 'rnc'))
+        self.client_name.bind("<KeyRelease>", lambda e: self._on_keyup(e, 'name'))
+        self.suggestion_listbox.bind("<<ListboxSelect>>", self._on_suggestion_select)
+        client_frame.columnconfigure(1, weight=1); client_frame.columnconfigure(3, weight=1)
+        
+        items_frame = ttk.LabelFrame(self, text="3. Detalles de la Factura", padding=10)
+        items_frame.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
+        add_item_frame = ttk.Frame(items_frame); add_item_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(add_item_frame, text="Descripción:").grid(row=0, column=0, padx=5); self.item_desc = ttk.Entry(add_item_frame); self.item_desc.grid(row=0, column=1, padx=5, sticky='ew')
+        ttk.Label(add_item_frame, text="Cant:").grid(row=0, column=2, padx=5); self.item_qty = ttk.Entry(add_item_frame, width=8); self.item_qty.grid(row=0, column=3, padx=5)
+        ttk.Label(add_item_frame, text="Precio Unit:").grid(row=0, column=4, padx=5); self.item_price = ttk.Entry(add_item_frame, width=12); self.item_price.grid(row=0, column=5, padx=5)
+        ttk.Button(add_item_frame, text="Agregar Detalle", command=self._add_item).grid(row=0, column=6, padx=10)
+        add_item_frame.columnconfigure(1, weight=1)
+        columns = ('desc', 'qty', 'price', 'subtotal'); self.items_tree = ttk.Treeview(items_frame, columns=columns, show='headings')
+        self.items_tree.heading('desc', text='Descripción'); self.items_tree.heading('qty', text='Cantidad'); self.items_tree.column('qty', width=80, anchor='center'); self.items_tree.heading('price', text='Precio Unitario'); self.items_tree.column('price', width=120, anchor='e'); self.items_tree.heading('subtotal', text='Subtotal'); self.items_tree.column('subtotal', width=120, anchor='e')
+        self.items_tree.pack(fill=tk.BOTH, expand=True, pady=5)
+        ttk.Button(items_frame, text="Eliminar Detalle", command=self._remove_item).pack(pady=5, anchor="w", padx=5)
+        
+        bottom_frame = ttk.Frame(self, padding=10); bottom_frame.pack(fill=tk.X)
+        totals_container = ttk.Frame(bottom_frame); totals_container.pack(side=tk.RIGHT)
+        self.subtotal_label = ttk.Label(totals_container, text="Subtotal: RD$ 0.00"); self.subtotal_label.pack(anchor="e")
+        self.itbis_label = ttk.Label(totals_container, text="ITBIS: RD$ 0.00"); self.itbis_label.pack(anchor="e")
+        self.total_label = ttk.Label(totals_container, text="Total: RD$ 0.00", font=("Arial", 11, "bold")); self.total_label.pack(anchor="e", pady=5)
+        itbis_check_frame = ttk.Frame(bottom_frame); itbis_check_frame.pack(side=tk.LEFT, anchor='s', pady=5)
+        ttk.Checkbutton(itbis_check_frame, text="Aplicar ITBIS (18%)", variable=self.apply_itbis, command=self._recalculate_totals).pack()
+        ttk.Button(self, text="Generar Factura en Excel", style="Accent.TButton", command=self._generate).pack(pady=10, ipady=8, fill=tk.X, padx=10)
+    
+    def _update_ncf_sequence(self, event=None):
+        selected_type = self.ncf_type_var.get()
+        prefix = NCF_TYPES.get(selected_type)
+        if prefix:
+            next_ncf = self.controller.get_next_ncf(self.company_id, prefix)
+            self.ncf_number_var.set(next_ncf)
+
+    def _recalculate_totals(self):
+        subtotal_general = 0.0
+        for item_id in self.items_tree.get_children():
+            values = self.items_tree.item(item_id, 'values')
+            subtotal_general += float(values[3].replace(",", ""))
+        itbis = subtotal_general * ITBIS_RATE if self.apply_itbis.get() else 0.0
+        total = subtotal_general + itbis
+        self.subtotal_label.config(text=f"Subtotal: RD$ {subtotal_general:,.2f}")
+        self.itbis_label.config(text=f"ITBIS ({ITBIS_RATE*100:.0f}%): RD$ {itbis:,.2f}")
+        self.total_label.config(text=f"Total: RD$ {total:,.2f}")
+
+    def _generate(self):
+        client_name = self.client_name.get()
+        client_rnc = self.client_rnc.get()
+        invoice_ncf = self.ncf_number_var.get()
+        if not all([client_name, client_rnc, invoice_ncf]):
+            messagebox.showerror("Datos Faltantes", "Los datos del cliente y el NCF son requeridos.", parent=self)
+            return
+        if not self.items_tree.get_children():
+            messagebox.showerror("Sin Detalles", "Debes agregar al menos un detalle a la factura.", parent=self)
+            return
+            
+        ncf_type_prefix = NCF_TYPES.get(self.ncf_type_var.get())
+        output_dir = self.controller.get_invoice_output_path(self.company_id, ncf_type_prefix)
+        if not output_dir:
+            return
+            
+        company_details = self.controller.get_company_details(self.company_id)
+        items = []
+        for item_id in self.items_tree.get_children():
+            values = self.items_tree.item(item_id, 'values')
+            items.append({
+                'description': values[0],
+                'quantity': float(values[1].replace(",", "")),
+                'unit_price': float(values[2].replace(",", "")),
+                'subtotal': float(values[3].replace(",", ""))
+            })
+        
+        invoice_data = {
+            "company_name": company_details['name'], "company_rnc": company_details['rnc'],
+            "company_address": company_details.get('address', ''), "client_name": client_name,
+            "client_rnc": client_rnc, "invoice_date": self.invoice_date.get_date(),
+            "invoice_ncf": invoice_ncf, "invoice_due_date": self.invoice_due_date.get_date(),
+            "items": items, "apply_itbis": self.apply_itbis.get()
+        }
+        
+        safe_client_name = "".join(c for c in client_name if c.isalnum() or c in " .-_").rstrip()
+        output_filename = f"Factura {invoice_ncf} - {safe_client_name}.xlsx"
+        output_path = os.path.join(output_dir, output_filename)
+        
+        invoice_filler.fill_invoice_template(self.company_template_path, output_path, invoice_data)
+
+    def _add_item(self):
+        desc = self.item_desc.get();
+        try:
+            qty = float(self.item_qty.get()); price = float(self.item_price.get())
+        except (ValueError, TypeError): messagebox.showerror("Error", "Cantidad y Precio deben ser números.", parent=self); return
+        if not desc: messagebox.showwarning("Dato Faltante", "La descripción no puede estar vacía.", parent=self); return
+        subtotal = qty * price; self.items_tree.insert('', 'end', values=(desc, f"{qty:,.2f}", f"{price:,.2f}", f"{subtotal:,.2f}"))
+        self.item_desc.delete(0, tk.END); self.item_qty.delete(0, tk.END); self.item_price.delete(0, tk.END)
+        self.item_desc.focus(); self._recalculate_totals()
+
+    def _remove_item(self):
+        selected = self.items_tree.selection()
+        if not selected: messagebox.showwarning("Sin Selección", "Selecciona un detalle para eliminar.", parent=self); return
+        for item in selected: self.items_tree.delete(item)
+        self._recalculate_totals()
+
+    def _on_keyup(self, event, search_by):
+        query = event.widget.get();
+        if len(query) < 2: self.suggestion_listbox.grid_remove(); return
+        results = self.controller.search_third_parties(query, search_by=search_by)
+        self.suggestion_listbox.delete(0, tk.END)
+        if results:
+            self.suggestion_listbox.grid()
+            for item in results: self.suggestion_listbox.insert(tk.END, f"{item['rnc']} - {item['name']}")
+        else: self.suggestion_listbox.grid_remove()
+
+    def _on_suggestion_select(self, event):
+        if not self.suggestion_listbox.curselection(): return
+        selection = self.suggestion_listbox.get(self.suggestion_listbox.curselection())
+        rnc, name = selection.split(' - ', 1)
+        self.client_rnc.delete(0, tk.END); self.client_rnc.insert(0, rnc)
+        self.client_name.delete(0, tk.END); self.client_name.insert(0, name)
+        self.suggestion_listbox.grid_remove()
+
+### Archivo: advanced_retention_window.py
+
+# advanced_retention_window.py (VERSIÓN COMPLETA Y MEJORADA)
+
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkcalendar import DateEntry
+import report_generator
+from datetime import datetime
+
+class AdvancedRetentionWindow(tk.Toplevel):
+    def __init__(self, parent, controller, calculation_id=None):
+        super().__init__(parent.root)
+        self.parent = parent
+        self.controller = controller
+        self.calculation_id = calculation_id
+        self.calculation_name = ""
+
+        self.title("Cálculo de Impuestos y Retenciones")
+        self.geometry("1300x700")
+        self.grab_set()
+
+        self.all_invoices = []
+        self.tree_item_states = {}
+        self.percent_to_pay_var = tk.StringVar(value="2.0")
+        self.percent_to_pay_var.trace_add("write", self._on_percent_change)
+
+        self._build_ui()
+        
+        if self.calculation_id:
+            self._load_calculation_data()
+
+    def _build_ui(self):
+        top_frame = ttk.Frame(self, padding=10)
+        top_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        filter_frame = ttk.LabelFrame(top_frame, text="1. Filtrar Facturas de Ingreso", padding=10)
+        filter_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        ttk.Label(filter_frame, text="Desde:").grid(row=0, column=0, sticky="w", pady=2)
+        self.start_date_entry = DateEntry(filter_frame, date_pattern='yyyy-mm-dd', width=12)
+        self.start_date_entry.grid(row=0, column=1, padx=5)
+
+        ttk.Label(filter_frame, text="Hasta:").grid(row=1, column=0, sticky="w", pady=2)
+        self.end_date_entry = DateEntry(filter_frame, date_pattern='yyyy-mm-dd', width=12)
+        self.end_date_entry.grid(row=1, column=1, padx=5)
+
+        ttk.Button(filter_frame, text="Buscar Facturas", command=self._search_invoices).grid(row=0, column=2, rowspan=2, padx=10, ipady=5)
+
+        percent_frame = ttk.LabelFrame(top_frame, text="2. Definir Porcentaje a Pagar", padding=10)
+        percent_frame.pack(side=tk.LEFT, fill=tk.X, padx=10)
+        
+        ttk.Label(percent_frame, text="% sobre Total Factura:").pack(pady=2)
+        ttk.Entry(percent_frame, textvariable=self.percent_to_pay_var, width=10, font=("Arial", 10)).pack(pady=2)
+
+        tree_frame = ttk.LabelFrame(self, text="3. Seleccionar Facturas y Aplicar Retenciones", padding=10)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        columns = ('select', 'fecha', 'no_fact', 'empresa', 'subtotal', 'itbis', 'total', 'ret_check', 'ret_valor', 'monto_pagar', 'total_imp')
+        self.invoice_tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
+        # ... (Definición de columnas no cambia) ...
+        self.invoice_tree.heading('select', text='Sel.')
+        self.invoice_tree.column('select', width=40, anchor='center')
+        self.invoice_tree.heading('fecha', text='Fecha')
+        self.invoice_tree.column('fecha', width=80, anchor='w')
+        self.invoice_tree.heading('no_fact', text='No. Factura')
+        self.invoice_tree.column('no_fact', width=110, anchor='w')
+        self.invoice_tree.heading('empresa', text='Empresa')
+        self.invoice_tree.column('empresa', width=250, anchor='w')
+        self.invoice_tree.heading('subtotal', text='Subtotal')
+        self.invoice_tree.column('subtotal', width=100, anchor='e')
+        self.invoice_tree.heading('itbis', text='ITBIS')
+        self.invoice_tree.column('itbis', width=100, anchor='e')
+        self.invoice_tree.heading('total', text='Total Factura')
+        self.invoice_tree.column('total', width=100, anchor='e')
+        self.invoice_tree.heading('ret_check', text='Retención ITBIS?')
+        self.invoice_tree.column('ret_check', width=100, anchor='center')
+        self.invoice_tree.heading('ret_valor', text='Valor Retención')
+        self.invoice_tree.column('ret_valor', width=100, anchor='e')
+        self.invoice_tree.heading('monto_pagar', text='% A Pagar')
+        self.invoice_tree.column('monto_pagar', width=100, anchor='e')
+        self.invoice_tree.heading('total_imp', text='Total Impuestos')
+        self.invoice_tree.column('total_imp', width=120, anchor='e')
+        
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.invoice_tree.yview)
+        self.invoice_tree.configure(yscrollcommand=scrollbar.set)
+        self.invoice_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.invoice_tree.bind('<Button-1>', self._on_tree_click)
+
+        bottom_frame = ttk.Frame(self, padding=10)
+        bottom_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # <<-- FRAME DE RESULTADOS AHORA ES DINÁMICO -->>
+        self.results_frame = ttk.LabelFrame(bottom_frame, text="4. Resultado Final por Moneda de Origen", padding=10)
+        self.results_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        action_frame = ttk.Frame(bottom_frame)
+        action_frame.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        ttk.Button(action_frame, text="Guardar Cálculo", command=self._save_calculation).pack(ipady=5, padx=10, fill=tk.X)
+        ttk.Button(action_frame, text="Generar Reporte PDF", style="Accent.TButton", command=self._export_pdf).pack(ipady=5, padx=10, fill=tk.X)
+
+    def _load_calculation_data(self):
+        """Carga los datos de un cálculo existente."""
+        data = self.controller.get_tax_calculation_details(self.calculation_id)
+        if not data:
+            messagebox.showerror("Error", "No se pudo cargar el cálculo.", parent=self)
+            self.destroy()
+            return
+
+        main_data = data['main']
+        details_data = data['details']
+
+        self.calculation_name = main_data['name']
+        self.title(f"Editando Cálculo: {self.calculation_name}")
+        
+        # Cargar datos en los campos
+        self.start_date_entry.set_date(datetime.strptime(main_data['start_date'], '%Y-%m-%d'))
+        self.end_date_entry.set_date(datetime.strptime(main_data['end_date'], '%Y-%m-%d'))
+        self.percent_to_pay_var.set(str(main_data['percent_to_pay']))
+
+        # Buscar las facturas y luego aplicar selecciones
+        self._search_invoices(preselected_details=details_data)
+
+    def _search_invoices(self, preselected_details=None):
+        start_date = self.start_date_entry.get_date().strftime('%Y-%m-%d')
+        end_date = self.end_date_entry.get_date().strftime('%Y-%m-%d')
+        company_id = self.parent.get_current_company_id()
+        
+        self.all_invoices = self.controller.get_emitted_invoices_for_period(company_id, start_date, end_date)
+        
+        for item in self.invoice_tree.get_children(): self.invoice_tree.delete(item)
+        self.tree_item_states.clear()
+
+        if not self.all_invoices:
+            if not preselected_details: # Solo mostrar si no estamos cargando datos
+                messagebox.showinfo("Sin Datos", "No se encontraron facturas de ingreso en el rango de fechas.", parent=self)
+            return
+
+        for inv in self.all_invoices:
+            inv_id = inv['id']
+            # Determinar estado inicial
+            is_selected = preselected_details is not None and inv_id in preselected_details
+            has_retention = is_selected and preselected_details[inv_id]
+
+            self.tree_item_states[inv_id] = {'selected': is_selected, 'retention': has_retention}
+            
+            itbis_rd = inv['itbis'] * inv['exchange_rate']
+            total_rd = inv['total_amount_rd']
+            subtotal_rd = total_rd - itbis_rd
+
+            values = (
+                '☑' if is_selected else '☐', inv['invoice_date'], inv['invoice_number'], inv['third_party_name'],
+                f"{subtotal_rd:,.2f}", f"{itbis_rd:,.2f}", f"{total_rd:,.2f}",
+                '☑' if has_retention else '☐', "0.00", "0.00", "0.00"
+            )
+            self.invoice_tree.insert('', 'end', iid=inv_id, values=values)
+        
+        self._recalculate_and_update()
+
+    def _recalculate_and_update(self):
+        currency_totals = {} # {'USD': 500.0, 'RD$': 25000.0}
+        grand_total_rd = 0.0
+        currency_symbols = {'USD': '$', 'EUR': '€', 'RD$': 'RD$'} # Mapeo de símbolos
+
+        try:
+            percent_to_pay = float(self.percent_to_pay_var.get() or 0) / 100.0
+        except ValueError:
+            percent_to_pay = 0.0
+
+        for inv_id, state in self.tree_item_states.items():
+            invoice_data = next((inv for inv in self.all_invoices if inv['id'] == inv_id), None)
+            if not invoice_data: continue
+
+            # <<-- CAMBIO: Se usan los valores en la moneda original -->>
+            itbis_orig = invoice_data['itbis']
+            total_orig = invoice_data['total_amount']
+            invoice_currency = invoice_data['currency']
+            
+            valor_retencion_orig = 0.0
+            monto_a_pagar_orig = 0.0
+            total_impuestos_row_orig = 0.0
+
+            if state['selected']:
+                # 1. Calcular en moneda original
+                if state['retention']:
+                    valor_retencion_orig = itbis_orig * 0.30
+                
+                monto_a_pagar_orig = total_orig * percent_to_pay
+                itbis_neto_orig = itbis_orig - valor_retencion_orig
+                total_impuestos_row_orig = itbis_neto_orig + monto_a_pagar_orig
+                
+                # 2. Guardar el total en su moneda original
+                currency_totals.setdefault(invoice_currency, 0.0)
+                currency_totals[invoice_currency] += total_impuestos_row_orig
+
+                # 3. Calcular la versión en RD$ solo para el gran total final
+                exchange_rate = invoice_data['exchange_rate']
+                grand_total_rd += total_impuestos_row_orig * exchange_rate
+            
+            # Actualizar Treeview (estos valores siguen siendo en RD$ para consistencia de la tabla)
+            exchange_rate = invoice_data['exchange_rate']
+            self.invoice_tree.set(inv_id, 'ret_valor', f"{valor_retencion_orig * exchange_rate:,.2f}")
+            self.invoice_tree.set(inv_id, 'monto_pagar', f"{monto_a_pagar_orig * exchange_rate:,.2f}")
+            self.invoice_tree.set(inv_id, 'total_imp', f"{total_impuestos_row_orig * exchange_rate:,.2f}")
+
+        # Actualizar dinámicamente el frame de resultados
+        for widget in self.results_frame.winfo_children():
+            widget.destroy()
+
+        if not currency_totals:
+            ttk.Label(self.results_frame, text="RD$ 0.00", font=("Arial", 12, "bold")).pack()
+        else:
+            # <<-- CAMBIO: Mostrar un total por cada moneda -->>
+            for currency, total in sorted(currency_totals.items()):
+                symbol = currency_symbols.get(currency, currency) # Usa el símbolo o el código si no está
+                label_text = f"Suma Total Impuestos ({currency}):"
+                value_text = f"{symbol} {total:,.2f}"
+                frame = ttk.Frame(self.results_frame)
+                frame.pack(fill=tk.X)
+                ttk.Label(frame, text=label_text, font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+                ttk.Label(frame, text=value_text, font=("Arial", 10, "bold")).pack(side=tk.RIGHT, padx=5)
+
+            ttk.Separator(self.results_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+            frame = ttk.Frame(self.results_frame)
+            frame.pack(fill=tk.X)
+            ttk.Label(frame, text="GRAN TOTAL (CONVERTIDO A RD$):", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=5)
+            ttk.Label(frame, text=f"RD$ {grand_total_rd:,.2f}", font=("Arial", 12, "bold"), foreground="blue").pack(side=tk.RIGHT, padx=5)
+
+
+    def _save_calculation(self):
+        if not any(st['selected'] for st in self.tree_item_states.values()):
+            messagebox.showwarning("Nada que guardar", "Debes seleccionar al menos una factura para guardar el cálculo.", parent=self)
+            return
+
+        # Pedir un nombre si es un cálculo nuevo
+        if not self.calculation_id:
+            name = simpledialog.askstring("Nombre del Cálculo", "Introduce un nombre para guardar esta configuración:", parent=self)
+            if not name: return
+            self.calculation_name = name
+        
+        success, message = self.controller.save_tax_calculation(
+            calc_id=self.calculation_id,
+            company_id=self.parent.get_current_company_id(),
+            name=self.calculation_name,
+            start_date=self.start_date_entry.get_date().strftime('%Y-%m-%d'),
+            end_date=self.end_date_entry.get_date().strftime('%Y-%m-%d'),
+            percent=float(self.percent_to_pay_var.get()),
+            details=self.tree_item_states
+        )
+
+        if success:
+            messagebox.showinfo("Éxito", message, parent=self)
+            self.destroy() # Cerrar al guardar
+        else:
+            messagebox.showerror("Error", message, parent=self)
+    
+    # El resto de los métodos (_on_tree_click, _on_percent_change, _export_pdf) no sufren grandes cambios
+    # Se pegan aquí para tener el archivo completo y funcional.
+    
+    def _on_tree_click(self, event):
+        row_id_str = self.invoice_tree.identify_row(event.y)
+        column_id_str = self.invoice_tree.identify_column(event.x)
+        if not row_id_str: return
+        
+        row_id = int(row_id_str)
+        column_index = int(column_id_str.replace('#', '')) -1
+
+        if column_index == 0:
+            self.tree_item_states[row_id]['selected'] = not self.tree_item_states[row_id]['selected']
+            char = '☑' if self.tree_item_states[row_id]['selected'] else '☐'
+            self.invoice_tree.set(row_id, 'select', char)
+            # Si se deselecciona, apagar también la retención
+            if not self.tree_item_states[row_id]['selected']:
+                self.tree_item_states[row_id]['retention'] = False
+                self.invoice_tree.set(row_id, 'ret_check', '☐')
+
+        elif column_index == 7:
+            if self.tree_item_states[row_id]['selected']:
+                self.tree_item_states[row_id]['retention'] = not self.tree_item_states[row_id]['retention']
+                char = '☑' if self.tree_item_states[row_id]['retention'] else '☐'
+                self.invoice_tree.set(row_id, 'ret_check', char)
+
+        self._recalculate_and_update()
+
+    def _on_percent_change(self, *args):
+        self._recalculate_and_update()
+
+    def _export_pdf(self):
+        if not any(st['selected'] for st in self.tree_item_states.values()):
+            messagebox.showwarning("Sin Selección", "Debes seleccionar al menos una factura para generar el reporte.", parent=self)
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf", filetypes=[("Archivos PDF", "*.pdf")],
+            title="Guardar Reporte de Impuestos",
+            initialfile=f"Reporte_Impuestos_{self.parent.company_selector_var.get().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf"
+        )
+        if not save_path: return
+        
+        # <<-- PASO 1: RECOPILAR DATOS COMPLETOS PARA EL REPORTE -->>
+        selected_invoices_data = []
+        currency_totals = {}
+        grand_total_rd = 0.0
+        try:
+            percent_to_pay = float(self.percent_to_pay_var.get() or 0) / 100.0
+        except ValueError:
+            percent_to_pay = 0.0
+
+        for inv_id, state in self.tree_item_states.items():
+            if state['selected']:
+                invoice_data = next((inv for inv in self.all_invoices if inv['id'] == inv_id), None)
+                if invoice_data:
+                    # --- Cálculos en Moneda Original ---
+                    itbis_orig = invoice_data['itbis']
+                    total_orig = invoice_data['total_amount']
+                    subtotal_orig = total_orig - itbis_orig
+                    valor_retencion_orig = itbis_orig * 0.30 if state['retention'] else 0.0
+                    monto_a_pagar_orig = total_orig * percent_to_pay
+                    total_impuestos_row_orig = (itbis_orig - valor_retencion_orig) + monto_a_pagar_orig
+
+                    # --- Cálculos Convertidos a RD$ ---
+                    rate = invoice_data['exchange_rate']
+                    subtotal_rd = subtotal_orig * rate
+                    itbis_rd = itbis_orig * rate
+                    total_rd = total_orig * rate
+                    valor_retencion_rd = valor_retencion_orig * rate
+                    monto_a_pagar_rd = monto_a_pagar_orig * rate
+                    total_impuestos_row_rd = total_impuestos_row_orig * rate
+                    
+                    # Añadir data completa a la lista para el reporte
+                    selected_invoices_data.append({
+                        'fecha': invoice_data['invoice_date'],
+                        'no_fact': invoice_data['invoice_number'],
+                        'empresa': invoice_data['third_party_name'],
+                        'currency': invoice_data['currency'],
+                        'exchange_rate': rate,
+                        'total_orig': total_orig,
+                        'total_rd': total_rd,
+                        'total_imp_orig': total_impuestos_row_orig,
+                        'total_imp_rd': total_impuestos_row_rd
+                    })
+                    
+                    # Acumular totales para el resumen
+                    currency_totals.setdefault(invoice_data['currency'], 0.0)
+                    currency_totals[invoice_data['currency']] += total_impuestos_row_orig
+                    grand_total_rd += total_impuestos_row_rd
+
+        # --- Preparar datos del resumen ---
+        summary_data = {
+            "percent_to_pay": self.percent_to_pay_var.get(),
+            "currency_totals": currency_totals,
+            "grand_total_rd": grand_total_rd
+        }
+        
+        company_name = self.parent.company_selector_var.get()
+        periodo_str = f"Desde {self.start_date_entry.get()} hasta {self.end_date_entry.get()}"
+
+        # --- Llamar al generador de reportes con los datos completos ---
+        success, message = report_generator.generate_advanced_retention_pdf(
+            save_path, company_name, periodo_str, summary_data, selected_invoices_data
+        )
+
+        if success: messagebox.showinfo("Éxito", message, parent=self)
+        else: messagebox.showerror("Error", message, parent=self)
+
+### Archivo: attachment_editor_window.py
+
+# Archivo: attachment_editor_window.py (Fase 3: Herramienta de Recorte)
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+from PIL import Image, ImageTk, ImageEnhance
+import os
+
+class AttachmentEditorWindow(tk.Toplevel):
+    def __init__(self, parent, image_path):
+        super().__init__(parent)
+        self.image_path = image_path
+        self.original_image = None
+        self.current_image = None
+        self.photo_image = None
+
+        # Variables para Zoom y Pan
+        self.zoom_level = 1.0
+        self.max_zoom = 5.0
+        self.min_zoom = 0.1
+        self.image_id_on_canvas = None
+        self._drag_data = {"x": 0, "y": 0}
+
+        # Variables para Recortar
+        self.crop_mode = False
+        self.crop_start_x = 0
+        self.crop_start_y = 0
+        self.crop_end_x = 0
+        self.crop_end_y = 0
+        self.crop_rectangle_id = None
+
+        self.history = []
+        self.history_index = -1
+
+        self.title("Visor / Editor de Anexos")
+        self.geometry("800x700")
+        
+        self.icons = self._load_icons()
+        self._build_ui()
+        self._load_and_display_image() # <-- La línea que daba error ahora encontrará su método
+
+        # Bindings para el mouse
+        self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
+        self.canvas.bind("<ButtonPress-1>", self._on_button_press)
+        self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_button_release)
+
+    def _load_icons(self):
+        icon_names = ["rotate_left", "rotate_right", "contrast", "crop", "save", "undo", "redo", "reset"]
+        icons = {}
+        for name in icon_names:
+            try:
+                path = os.path.join("icons", f"{name}.png")
+                img = Image.open(path).resize((24, 24), Image.Resampling.LANCZOS)
+                icons[name] = ImageTk.PhotoImage(img)
+            except FileNotFoundError:
+                print(f"Advertencia: No se encontró el icono 'icons/{name}.png'")
+                icons[name] = None
+        return icons
+
+    def _build_ui(self):
+        toolbar = ttk.Frame(self, padding=5)
+        toolbar.pack(side=tk.TOP, fill=tk.X)
+        
+        ttk.Button(toolbar, image=self.icons.get("undo"), command=self._undo).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, image=self.icons.get("redo"), command=self._redo).pack(side=tk.LEFT, padx=2)
+        ttk.Separator(toolbar, orient='vertical').pack(side=tk.LEFT, padx=10, fill='y')
+        ttk.Button(toolbar, image=self.icons.get("rotate_left"), command=lambda: self._rotate_image(90)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, image=self.icons.get("rotate_right"), command=lambda: self._rotate_image(-90)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, image=self.icons.get("contrast"), command=self._enhance_contrast).pack(side=tk.LEFT, padx=2)
+        
+        self.crop_button = ttk.Button(toolbar, image=self.icons.get("crop"), command=self._toggle_crop_mode)
+        self.crop_button.pack(side=tk.LEFT, padx=2)
+        
+        self.apply_crop_button = ttk.Button(toolbar, text="Aplicar Recorte", command=self._apply_crop, style="Accent.TButton")
+        self.cancel_crop_button = ttk.Button(toolbar, text="Cancelar", command=self._toggle_crop_mode)
+
+        ttk.Separator(toolbar, orient='vertical').pack(side=tk.LEFT, padx=10, fill='y')
+        ttk.Button(toolbar, image=self.icons.get("reset"), command=self._reset_view).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="Guardar Cambios", image=self.icons.get("save"), compound="left", style="Accent.TButton", command=self._save_changes).pack(side=tk.RIGHT, padx=10)
+
+        self.canvas = tk.Canvas(self, bg="#7f7f7f")
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        
+    def _load_and_display_image(self):
+        """Carga la imagen original desde el disco y la muestra."""
+        try:
+            self.original_image = Image.open(self.image_path)
+            self.current_image = self.original_image.copy()
+            self._update_display()
+        except Exception as e:
+            messagebox.showerror("Error al Cargar Imagen", f"No se pudo abrir el archivo:\n{e}", parent=self)
+            self.destroy()
+
+    def _update_display(self):
+        """Prepara y muestra la imagen actual en el canvas, aplicando el zoom."""
+        if not self.current_image: return
+        new_width = int(self.original_image.width * self.zoom_level)
+        new_height = int(self.original_image.height * self.zoom_level)
+        resized_image = self.current_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        self.photo_image = ImageTk.PhotoImage(resized_image)
+        self.canvas.delete("all")
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        self.image_id_on_canvas = self.canvas.create_image(canvas_w / 2, canvas_h / 2, anchor=tk.CENTER, image=self.photo_image)
+        self.crop_rectangle_id = None
+
+    def _reset_view(self):
+        """Recarga la imagen original y resetea el zoom y el modo recorte."""
+        if self.crop_mode:
+            self._toggle_crop_mode()
+        self.zoom_level = 1.0
+        self._load_and_display_image()
+
+    def _on_mouse_wheel(self, event):
+        if self.crop_mode: return # No hacer zoom en modo recorte
+        if event.delta > 0 or event.num == 4: self.zoom_level *= 1.1
+        elif event.delta < 0 or event.num == 5: self.zoom_level /= 1.1
+        self.zoom_level = max(self.min_zoom, min(self.max_zoom, self.zoom_level))
+        self._update_display()
+
+    def _on_button_press(self, event):
+        if self.crop_mode:
+            self.crop_start_x = event.x
+            self.crop_start_y = event.y
+            if self.crop_rectangle_id: self.canvas.delete(self.crop_rectangle_id)
+            self.crop_rectangle_id = self.canvas.create_rectangle(self.crop_start_x, self.crop_start_y, self.crop_start_x, self.crop_start_y, outline="red", width=2, dash=(4, 4))
+        else:
+            self.canvas.config(cursor="fleur")
+            self._drag_data["x"] = event.x
+            self._drag_data["y"] = event.y
+
+    def _on_mouse_drag(self, event):
+        if self.crop_mode:
+            self.crop_end_x = event.x
+            self.crop_end_y = event.y
+            self.canvas.coords(self.crop_rectangle_id, self.crop_start_x, self.crop_start_y, self.crop_end_x, self.crop_end_y)
+        else:
+            delta_x = event.x - self._drag_data["x"]
+            delta_y = event.y - self._drag_data["y"]
+            self.canvas.move(self.image_id_on_canvas, delta_x, delta_y)
+            self._drag_data["x"] = event.x
+            self._drag_data["y"] = event.y
+    
+    def _on_button_release(self, event):
+        if self.crop_mode:
+            self.crop_end_x = event.x
+            self.crop_end_y = event.y
+        else:
+            self.canvas.config(cursor="")
+            
+    def _toggle_crop_mode(self):
+        self.crop_mode = not self.crop_mode
+        if self.crop_mode:
+            self.canvas.config(cursor="crosshair")
+            self.apply_crop_button.pack(side=tk.LEFT, padx=(10, 2))
+            self.cancel_crop_button.pack(side=tk.LEFT, padx=2)
+        else:
+            self.canvas.config(cursor="")
+            if self.crop_rectangle_id: self.canvas.delete(self.crop_rectangle_id)
+            self.crop_rectangle_id = None
+            self.apply_crop_button.pack_forget()
+            self.cancel_crop_button.pack_forget()
+
+    def _apply_crop(self):
+        if not self.crop_rectangle_id:
+            messagebox.showwarning("Sin Selección", "Dibuja un rectángulo en la imagen primero.", parent=self)
+            return
+        
+        x1, y1, x2, y2 = self.canvas.coords(self.crop_rectangle_id)
+        box_x1, box_y1 = min(x1, x2), min(y1, y2)
+        box_x2, box_y2 = max(x1, x2), max(y1, y2)
+
+        img_coords = self.canvas.coords(self.image_id_on_canvas)
+        img_x, img_y = img_coords[0], img_coords[1]
+        
+        img_w_on_canvas = self.photo_image.width()
+        img_h_on_canvas = self.photo_image.height()
+        
+        canvas_img_x1 = img_x - img_w_on_canvas / 2
+        canvas_img_y1 = img_y - img_h_on_canvas / 2
+        
+        crop_x1 = max(0, box_x1 - canvas_img_x1)
+        crop_y1 = max(0, box_y1 - canvas_img_y1)
+        crop_x2 = min(img_w_on_canvas, box_x2 - canvas_img_x1)
+        crop_y2 = min(img_h_on_canvas, box_y2 - canvas_img_y1)
+        
+        if crop_x1 >= crop_x2 or crop_y1 >= crop_y2:
+            self._toggle_crop_mode()
+            return
+
+        scale_factor = self.current_image.width / img_w_on_canvas
+        
+        final_crop_box = (
+            int(crop_x1 * scale_factor), int(crop_y1 * scale_factor),
+            int(crop_x2 * scale_factor), int(crop_y2 * scale_factor)
+        )
+
+        self.current_image = self.current_image.crop(final_crop_box)
+        self.original_image = self.current_image.copy()
+
+        self._toggle_crop_mode()
+        self.zoom_level = 1.0
+        self._update_display()
+        
+    def _rotate_image(self, angle):
+        if self.current_image:
+            self.current_image = self.current_image.rotate(angle, expand=True)
+            self._update_display()
+            
+    def _enhance_contrast(self):
+        if self.current_image:
+            enhancer = ImageEnhance.Contrast(self.current_image)
+            self.current_image = enhancer.enhance(1.5)
+            self._update_display()
+
+    def _undo(self): messagebox.showinfo("Próximamente", "La función de deshacer se implementará en la fase final.", parent=self)
+    def _redo(self): messagebox.showinfo("Próximamente", "La función de rehacer se implementará en la fase final.", parent=self)
+
+    def _save_changes(self):
+        if self.current_image:
+            try:
+                save_image = self.current_image # Guardamos la versión actual
+                if save_image.mode == 'RGBA': save_image = save_image.convert('RGB')
+                save_image.save(self.image_path, quality=95, optimize=True)
+                self.original_image = self.current_image.copy() # La versión guardada es ahora la original
+                messagebox.showinfo("Guardado", "Los cambios han sido guardados.", parent=self)
+            except Exception as e:
+                messagebox.showerror("Error al Guardar", f"No se pudo guardar el archivo:\n{e}", parent=self)
+
+### Archivo: invoice_filler.py
+
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+
+class CompanyManagementWindow(tk.Toplevel):
+    def __init__(self, parent, controller):
+        super().__init__(parent.root)
+        self.parent = parent
+        self.controller = controller
+        self.title("Gestionar Empresas")
+        self.geometry("800x600")
+        self.grab_set()
+
+        self.selected_company_id = None
+        self._build_ui()
+        self._load_companies()
+
+    def _build_ui(self):
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Frame para la lista de empresas
+        list_frame = ttk.LabelFrame(main_frame, text="Empresas Registradas", padding=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        columns = ('name', 'rnc')
+        self.tree = ttk.Treeview(list_frame, columns=columns, show='headings')
+        self.tree.heading('name', text='Nombre de la Empresa')
+        self.tree.heading('rnc', text='RNC')
+        self.tree.column('rnc', width=150)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Frame para el formulario de edición/creación
+        form_frame = ttk.LabelFrame(main_frame, text="Detalles de la Empresa", padding=10)
+        form_frame.pack(fill=tk.X, pady=10)
+
+        self.entries = {}
+        fields = {
+            "Nombre:": "name", "RNC:": "rnc", "Dirección:": "address",
+            "Ruta de Plantilla (Factura):": "invoice_template_path",
+            "Carpeta Base de Salida (Facturas):": "invoice_output_base_path"
+        }
+        
+        row = 0
+        for label, key in fields.items():
+            ttk.Label(form_frame, text=label).grid(row=row, column=0, sticky="w", padx=5, pady=3)
+            entry = ttk.Entry(form_frame, width=60)
+            entry.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
+            self.entries[key] = entry
+            
+            # Añadir botones de "Examinar" para las rutas
+            if "path" in key:
+                is_file = "template" in key
+                cmd = lambda k=key, f=is_file: self._browse_path(k, f)
+                ttk.Button(form_frame, text="Examinar...", command=cmd).grid(row=row, column=2, padx=5)
+            row += 1
+            
+        form_frame.columnconfigure(1, weight=1)
+
+        # Frame para los botones de acción
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill=tk.X, pady=(10, 0))
+
+        ttk.Button(buttons_frame, text="Nuevo", command=self._clear_fields).pack(side=tk.LEFT)
+        ttk.Button(buttons_frame, text="Guardar Cambios", style="Accent.TButton", command=self._save_company).pack(side=tk.LEFT, padx=10)
+        ttk.Button(buttons_frame, text="Eliminar Empresa", command=self._delete_company).pack(side=tk.RIGHT)
+
+    def _load_companies(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        companies = self.controller.get_all_companies()
+        for company in companies:
+            self.tree.insert('', 'end', iid=company['id'], values=(company['name'], company['rnc']))
+
+    def _on_select(self, event=None):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            return
+        
+        self.selected_company_id = int(selected_items[0])
+        details = self.controller.get_company_details(self.selected_company_id)
+        if not details: return
+
+        for key, entry in self.entries.items():
+            entry.delete(0, tk.END)
+            entry.insert(0, details.get(key, ""))
+            
+    def _clear_fields(self):
+        self.selected_company_id = None
+        self.tree.selection_remove(self.tree.selection())
+        for entry in self.entries.values():
+            entry.delete(0, tk.END)
+        self.entries['name'].focus()
+
+    def _browse_path(self, key, is_file):
+        if is_file:
+            path = filedialog.askopenfilename(title="Seleccionar Plantilla de Factura", filetypes=[("Archivos de Excel", "*.xlsx")])
+        else:
+            path = filedialog.askdirectory(title="Seleccionar Carpeta Base para Guardar Facturas")
+        
+        if path:
+            self.entries[key].delete(0, tk.END)
+            self.entries[key].insert(0, path)
+
+    def _save_company(self):
+        name = self.entries['name'].get()
+        rnc = self.entries['rnc'].get()
+        address = self.entries['address'].get()
+        template_path = self.entries['invoice_template_path'].get()
+        output_path = self.entries['invoice_output_base_path'].get()
+
+        if not name or not rnc:
+            messagebox.showerror("Error", "El Nombre y el RNC son obligatorios.", parent=self)
+            return
+
+        if self.selected_company_id: # Actualizar
+            success, msg = self.controller.update_company(self.selected_company_id, name, rnc, address)
+        else: # Crear
+            success, msg = self.controller.add_company(name, rnc)
+            # Si se crea, necesitamos recargar para obtener el ID y guardar las rutas
+            if success:
+                self._load_companies()
+                # Encontramos la empresa recién creada para obtener su ID
+                new_company = next((c for c in self.controller.get_all_companies() if c['name'] == name), None)
+                if new_company:
+                    self.selected_company_id = new_company['id']
+                else: success = False; msg = "No se pudo encontrar la nueva empresa para guardar las rutas."
+        
+        if not success:
+            messagebox.showerror("Error al Guardar", msg, parent=self)
+            return
+
+        # Guardar las rutas de facturación
+        success_paths, msg_paths = self.controller.update_company_invoice_settings(self.selected_company_id, template_path, output_path)
+        
+        if success_paths:
+            messagebox.showinfo("Éxito", "Empresa guardada y configuración de facturación actualizada.", parent=self)
+        else:
+            messagebox.showwarning("Advertencia", f"Los datos de la empresa se guardaron, pero hubo un error al guardar la configuración de facturación: {msg_paths}", parent=self)
+        
+        self._load_companies()
+        self.parent._populate_company_selector() # Refrescar la lista en la ventana principal
+
+    def _delete_company(self):
+        if not self.selected_company_id:
+            messagebox.showwarning("Sin Selección", "Selecciona una empresa para eliminar.", parent=self)
+            return
+            
+        confirm = messagebox.askyesno("Confirmar Eliminación", "¿Estás seguro de que deseas eliminar esta empresa y TODAS sus facturas? Esta acción no se puede deshacer.", icon='warning', parent=self)
+        if confirm:
+            success, msg = self.controller.delete_company(self.selected_company_id)
+            if success:
+                messagebox.showinfo("Éxito", msg, parent=self)
+                self._clear_fields()
+                self._load_companies()
+                self.parent._populate_company_selector()
+            else:
+                messagebox.showerror("Error", msg, parent=self)
+
+### Archivo: pdf_organizer_window.py
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import report_generator
+import os
+
+class PDFOrganizerWindow(tk.Toplevel):
+# En el archivo: pdf_organizer_window.py
+
+    def __init__(self, parent, controller, report_data, company_name, month, year):
+        # La única línea que cambia es la siguiente:
+        super().__init__(parent)
+        
+        self.parent = parent
+        self.controller = controller
+        self.report_data = report_data
+        self.company_name = company_name
+        self.month = month
+        self.year = year
+        
+        self.attachments_list = [f for f in self.report_data['expense_invoices'] if f.get('attachment_path')]
+
+        self.title("Organizador de Anexos para el Reporte")
+        self.geometry("700x500")
+        self.grab_set()
+        
+        self._build_ui()
+        self._populate_tree()
+
+    def _build_ui(self):
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        list_frame = ttk.LabelFrame(main_frame, text="Anexos a Incluir (en orden)", padding=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        
+        columns = ('invoice_number', 'third_party', 'file')
+        self.tree = ttk.Treeview(list_frame, columns=columns, show='headings')
+        self.tree.heading('invoice_number', text='No. Factura')
+        self.tree.column('invoice_number', width=150)
+        self.tree.heading('third_party', text='Proveedor')
+        self.tree.column('third_party', width=250)
+        self.tree.heading('file', text='Archivo')
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+        buttons_frame = ttk.Frame(main_frame, padding=(10, 0))
+        buttons_frame.pack(fill=tk.Y, side=tk.LEFT)
+        
+        ttk.Button(buttons_frame, text="↑ Subir", command=self._move_up).pack(pady=2, fill=tk.X)
+        ttk.Button(buttons_frame, text="↓ Bajar", command=self._move_down).pack(pady=2, fill=tk.X)
+        ttk.Button(buttons_frame, text="Excluir", command=self._exclude, style="Accent.TButton").pack(pady=10, fill=tk.X)
+
+        action_frame = ttk.Frame(self, padding=10)
+        action_frame.pack(fill=tk.X)
+        ttk.Button(action_frame, text="Generar PDF Final", command=self._generate_final_pdf, style="Accent.TButton").pack(side=tk.RIGHT)
+        ttk.Button(action_frame, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT, padx=10)
+
+    def _populate_tree(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        for item_data in self.attachments_list:
+            file_name = os.path.basename(item_data['attachment_path'])
+            self.tree.insert('', 'end', values=(item_data['invoice_number'], item_data['third_party_name'], file_name), iid=str(item_data['id']))
+
+    def _move_up(self):
+        selected_item = self.tree.focus()
+        if not selected_item: return
+        
+        index = self.tree.index(selected_item)
+        if index > 0:
+            self.tree.move(selected_item, '', index - 1)
+            item_data = next(item for item in self.attachments_list if str(item['id']) == selected_item)
+            self.attachments_list.remove(item_data)
+            self.attachments_list.insert(index - 1, item_data)
+
+    def _move_down(self):
+        selected_item = self.tree.focus()
+        if not selected_item: return
+        
+        index = self.tree.index(selected_item)
+        if index < len(self.attachments_list) - 1:
+            self.tree.move(selected_item, '', index + 1)
+            item_data = next(item for item in self.attachments_list if str(item['id']) == selected_item)
+            self.attachments_list.remove(item_data)
+            self.attachments_list.insert(index + 1, item_data)
+
+    def _exclude(self):
+        selected_item = self.tree.focus()
+        if not selected_item: return
+        
+        self.tree.delete(selected_item)
+        self.attachments_list = [item for item in self.attachments_list if str(item['id']) != selected_item]
+
+    def _generate_final_pdf(self):
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("Archivos PDF", "*.pdf")],
+            title="Guardar Reporte Final con Anexos",
+            initialfile=f"Reporte_{self.company_name.replace(' ', '_')}_{self.month}_{self.year}.pdf"
+        )
+        if not save_path: return
+
+        self.report_data['ordered_attachments'] = self.attachments_list
+        attachment_base_path = self.controller.get_setting('attachment_base_path')
+        
+        success, message = report_generator.generate_professional_pdf(
+            self.report_data, save_path, self.company_name, 
+            self.month, self.year, attachment_base_path
+        )
+
+        if success:
+            messagebox.showinfo("Éxito", message, parent=self)
+            self.destroy()
+        else:
+            messagebox.showerror("Error", message, parent=self)
+
+### Archivo: report_generator.py
+
+# report_generator.py (Versión Completa con Logs de Depuración)
+
+import os
+import io
+import pandas as pd
+from fpdf import FPDF
+from PIL import Image
+from pypdf import PdfWriter, PdfReader
+import tempfile
+
+class PDF(FPDF):
+    """Clase heredada de FPDF para crear encabezados y pies de página personalizados."""
+    def __init__(self, orientation='P', unit='mm', format='A4', company_name="", report_title="", report_period=""):
+        super().__init__(orientation, unit, format)
+        self.company_name = company_name
+        self.report_title = report_title
+        self.report_period = report_period
+        self.set_auto_page_break(auto=True, margin=15)
+        self.alias_nb_pages()
+
+    def header(self):
+        self.set_font('Arial', 'B', 14)
+        self.cell(0, 10, self.report_title, 0, 1, 'C')
+        self.set_font('Arial', 'I', 11)
+        self.cell(0, 8, f'Empresa: {self.company_name}', 0, 1, 'C')
+        self.cell(0, 6, f'Período: {self.report_period}', 0, 1, 'C')
+        self.ln(10)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 10, f'Página {self.page_no()}/{{nb}}', 0, 0, 'C')
+
+def generate_professional_pdf(report_data, save_path, company_name, month, year, attachment_base_path):
+    temp_files = []
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_report:
+            temp_report_path = temp_report.name
+            temp_files.append(temp_report_path)
+
+        pdf_report = PDF(orientation='L', company_name=company_name, report_title="Reporte Mensual de Facturación", report_period=f"{month}/{year}")
+        pdf_report.add_page()
+        
+        # (Aquí va todo el código que dibuja el resumen y las tablas)
+        HEADER_BG_COLOR = (220, 220, 220)
+        ROW_BG_COLOR_ALT = (245, 245, 245)
+        pdf_report.set_font('Arial', 'B', 12)
+        pdf_report.cell(0, 10, 'Resumen General del Mes (en RD$)', 0, 1, 'L')
+        summary = report_data['summary']
+        pdf_report.set_font('Arial', '', 10)
+        col_width = pdf_report.w / 4; line_height = 7
+        pdf_report.cell(col_width, line_height, f"Total Ingresos:", border=0)
+        pdf_report.cell(col_width, line_height, f"RD$ {summary.get('total_ingresos', 0.0):,.2f}", border=0, ln=0, align='R')
+        pdf_report.cell(col_width, line_height, f"ITBIS Ingresos:", border=0)
+        pdf_report.cell(col_width, line_height, f"RD$ {summary.get('itbis_ingresos', 0.0):,.2f}", border=0, ln=1, align='R')
+        pdf_report.cell(col_width, line_height, f"Total Gastos:", border=0)
+        pdf_report.cell(col_width, line_height, f"RD$ {summary.get('total_gastos', 0.0):,.2f}", border=0, ln=0, align='R')
+        pdf_report.cell(col_width, line_height, f"ITBIS Gastos:", border=0)
+        pdf_report.cell(col_width, line_height, f"RD$ {summary.get('itbis_gastos', 0.0):,.2f}", border=0, ln=1, align='R')
+        pdf_report.set_font('Arial', 'B', 10)
+        pdf_report.cell(col_width, line_height, f"Total Neto:", border='T')
+        pdf_report.cell(col_width, line_height, f"RD$ {summary.get('total_neto', 0.0):,.2f}", border='T', ln=0, align='R')
+        pdf_report.cell(col_width, line_height, f"ITBIS Neto:", border='T')
+        pdf_report.cell(col_width, line_height, f"RD$ {summary.get('itbis_neto', 0.0):,.2f}", border='T', ln=1, align='R')
+        pdf_report.ln(10)
+        def draw_table(title, headers, data, column_widths_percent):
+            pdf_report.set_font('Arial', 'B', 12); pdf_report.cell(0, 10, title, 0, 1, 'L')
+            pdf_report.set_font('Arial', 'B', 9); pdf_report.set_fill_color(*HEADER_BG_COLOR)
+            page_width = pdf_report.w - 2 * pdf_report.l_margin
+            column_widths = [(w / 100.0) * page_width for w in column_widths_percent]
+            for i, header in enumerate(headers): pdf_report.cell(column_widths[i], 8, header, 1, 0, 'C', 1)
+            pdf_report.ln()
+            pdf_report.set_font('Arial', '', 8)
+            fill = False
+            for row in data:
+                pdf_report.set_fill_color(*ROW_BG_COLOR_ALT) if fill else pdf_report.set_fill_color(255, 255, 255)
+                for i, datum in enumerate(row): pdf_report.cell(column_widths[i], 6, str(datum), 1, 0, 'L' if i < 3 else 'R', 1)
+                pdf_report.ln()
+                fill = not fill
+        headers_emitted = ['Fecha', 'No. Fact.', 'Empresa', 'ITBIS (RD$)', 'Total (RD$)']
+        data_emitted = [[f['invoice_date'], f['invoice_number'], f['third_party_name'], f"{f['itbis'] * f['exchange_rate']:,.2f}", f"{f['total_amount_rd']:,.2f}"] for f in report_data['emitted_invoices']]
+        draw_table('Facturas Emitidas (Ingresos)', headers_emitted, data_emitted, [15, 15, 45, 12.5, 12.5])
+        pdf_report.ln(10)
+        headers_expenses = ['Fecha', 'No. Fact.', 'Empresa', 'ITBIS (RD$)', 'Total (RD$)']
+        data_expenses = [[f['invoice_date'], f['invoice_number'], f['third_party_name'], f"{f['itbis'] * f['exchange_rate']:,.2f}", f"{f['total_amount_rd']:,.2f}"] for f in report_data['expense_invoices']]
+        draw_table('Facturas de Gastos', headers_expenses, data_expenses, [15, 15, 45, 12.5, 12.5])
+        
+        pdf_report.output(temp_report_path)
+
+        merger = PdfWriter()
+        merger.append(temp_report_path)
+
+        attachments_to_process = report_data.get('ordered_attachments', 
+                                                 [f for f in report_data['expense_invoices'] if f.get('attachment_path')])
+
+        if attachments_to_process and attachment_base_path:
+            for invoice in attachments_to_process:
+                relative_path = invoice['attachment_path']
+                full_path = os.path.join(attachment_base_path, relative_path)
+
+                if os.path.exists(full_path):
+                    if full_path.lower().endswith('.pdf'):
+                        merger.append(full_path)
+                    
+                    elif full_path.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_img:
+                            temp_img_path = temp_img.name
+                            temp_files.append(temp_img_path)
+                        
+                        pdf_img = PDF(orientation='P', company_name=company_name, report_title="Anexo de Comprobante", report_period=f"Factura: {invoice['invoice_number']}")
+                        pdf_img.add_page()
+                        y_position = pdf_img.get_y()
+                        
+                        with Image.open(full_path) as img:
+                            img_w, img_h = img.size
+                            aspect_ratio = img_w / img_h
+                            printable_width = pdf_img.w - 2 * pdf_img.l_margin
+                            display_w = printable_width
+                            display_h = display_w / aspect_ratio
+                            
+                            available_height = pdf_img.h - y_position - pdf_img.b_margin
+                            if display_h > available_height:
+                                display_h = available_height
+                                display_w = display_h * aspect_ratio
+                        
+                        pdf_img.image(full_path, x=pdf_img.l_margin, y=y_position, w=display_w, h=display_h)
+                        pdf_img.output(temp_img_path)
+                        merger.append(temp_img_path)
+
+        with open(save_path, "wb") as f_out:
+            merger.write(f_out)
+
+        return True, "Reporte PDF con anexos generado exitosamente."
+
+    except Exception as e:
+        return False, f"No se pudo generar el PDF: {e}"
+    finally:
+        for temp_file in temp_files:
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
+
+
+def generate_excel_report(report_data, save_path):
+    """Genera un reporte mensual en formato Excel."""
+    try:
+        summary_totals = report_data["summary"]
+        resumen_data = {
+            "Descripción": ["Total Ingresos (RD$)", "Total ITBIS Ingresos (RD$)", "Total Gastos (RD$)", "Total ITBIS Gastos (RD$)", "ITBIS Neto (RD$)", "Total Neto (RD$)"],
+            "Monto": [summary_totals.get("total_ingresos", 0.0), summary_totals.get("itbis_ingresos", 0.0), summary_totals.get("total_gastos", 0.0), summary_totals.get("itbis_gastos", 0.0), summary_totals.get("itbis_neto", 0.0), summary_totals.get("total_neto", 0.0)]
+        }
+        df_resumen = pd.DataFrame(resumen_data)
+        df_ingresos = pd.DataFrame(report_data["emitted_invoices"])
+        df_gastos = pd.DataFrame(report_data["expense_invoices"])
+
+        with pd.ExcelWriter(save_path, engine='openpyxl') as writer:
+            df_resumen.to_excel(writer, sheet_name='Resumen', index=False)
+            df_ingresos.to_excel(writer, sheet_name='Ingresos', index=False)
+            df_gastos.to_excel(writer, sheet_name='Gastos', index=False)
+
+        return True, "Reporte Excel generado exitosamente."
+    except Exception as e:
+        return False, f"No se pudo generar el Excel: {e}"
+
+def generate_retention_pdf(save_path, company_name, period_str, results_data, selected_invoices):
+    """Genera un PDF profesional para el cálculo de retenciones."""
+    try:
+        pdf = PDF(orientation='P', company_name=company_name, report_title="Cálculo de Retenciones", report_period=period_str)
+        pdf.add_page()
+        
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, f"Base del Cálculo ({results_data['num_invoices']} facturas seleccionadas)", 0, 1, 'L')
+        pdf.set_font('Arial', '', 10)
+        pdf.cell(0, 7, f"Total General Seleccionado: RD$ {results_data['total_general_rd']:,.2f}", 0, 1, 'L')
+        pdf.cell(0, 7, f"Total ITBIS Seleccionado: RD$ {results_data['total_itbis_rd']:,.2f}", 0, 1, 'L')
+        pdf.cell(0, 7, f"Total Subtotal Seleccionado: RD$ {results_data['total_subtotal_rd']:,.2f}", 0, 1, 'L')
+        pdf.ln(5)
+
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "Resultados de Retenciones", 0, 1, 'L')
+        pdf.set_font('Arial', '', 10)
+        pdf.cell(0, 7, f"Retención del {results_data['p_itb']:.2f}% del ITBIS: RD$ {results_data['ret_itbis']:,.2f}", 0, 1, 'L')
+        pdf.cell(0, 7, f"Retención del {results_data['p_tot']:.2f}% del Total: RD$ {results_data['ret_total']:,.2f}", 0, 1, 'L')
+        pdf.ln(5)
+        
+        pdf.set_font('Arial', 'B', 13)
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(0, 10, f"TOTAL A RETENER: RD$ {results_data['total_a_retener']:,.2f}", border=1, ln=1, align='C', fill=True)
+        pdf.ln(10)
+
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "Facturas Incluidas en el Cálculo", 0, 1, 'L')
+        
+        pdf.set_font('Arial', 'B', 9)
+        pdf.cell(25, 7, "Fecha", 1, 0, 'C'); pdf.cell(40, 7, "No. Factura", 1, 0, 'C'); pdf.cell(85, 7, "Empresa", 1, 0, 'C'); pdf.cell(30, 7, "Total (RD$)", 1, 1, 'C')
+
+        pdf.set_font('Arial', '', 8)
+        for inv in selected_invoices:
+            pdf.cell(25, 6, inv['invoice_date'], 1, 0, 'L')
+            pdf.cell(40, 6, inv['invoice_number'], 1, 0, 'L')
+            pdf.cell(85, 6, inv['third_party_name'][:50], 1, 0, 'L')
+            pdf.cell(30, 6, f"{inv['total_amount_rd']:,.2f}", 1, 1, 'R')
+            
+        pdf.output(save_path)
+        return True, "Reporte de retenciones generado exitosamente."
+    except Exception as e:
+        return False, f"No se pudo generar el PDF de retenciones: {e}"
+    
+def generate_advanced_retention_pdf(save_path, company_name, period_str, summary_data, selected_invoices):
+    """Genera un PDF para el cálculo avanzado de impuestos, mostrando valores originales y convertidos."""
+    try:
+        pdf = PDF(orientation='L', company_name=company_name, report_title="Reporte de Cálculo de Impuestos", report_period=period_str)
+        pdf.add_page()
+        
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "Facturas Incluidas en el Cálculo", 0, 1, 'L')
+        
+        # <<-- CAMBIO: Nuevas columnas y anchos para la tabla detallada -->>
+        pdf.set_font('Arial', 'B', 8)
+        pdf.set_fill_color(220, 220, 220)
+        
+        # Anchos de columna optimizados para A4 horizontal
+        col_widths = [20, 30, 70, 12, 15, 25, 25, 25, 25]
+        headers = ['Fecha', 'No. Factura', 'Empresa', 'Mon.', 'Tasa', 'Total (Orig)', 'Total (RD$)', 'Impuestos (Orig)', 'Impuestos (RD$)']
+        
+        for i, header in enumerate(headers):
+            ln = 1 if i == len(headers) - 1 else 0
+            pdf.cell(col_widths[i], 7, header, 1, ln, 'C', 1)
+
+        pdf.set_font('Arial', '', 7)
+        currency_symbols = {'USD': '$', 'EUR': '€', 'RD$': 'RD$'}
+        fill = False
+        
+        # <<-- CAMBIO: Llenar la tabla con los nuevos datos -->>
+        for inv in selected_invoices:
+            pdf.set_fill_color(245, 245, 245) if fill else pdf.set_fill_color(255, 255, 255)
+            
+            symbol = currency_symbols.get(inv['currency'], inv['currency'])
+            
+            # Formatear valores
+            total_orig_str = f"{symbol} {inv['total_orig']:,.2f}"
+            total_rd_str = f"RD$ {inv['total_rd']:,.2f}"
+            imp_orig_str = f"{symbol} {inv['total_imp_orig']:,.2f}"
+            imp_rd_str = f"RD$ {inv['total_imp_rd']:,.2f}"
+
+            pdf.cell(col_widths[0], 6, inv['fecha'], 1, 0, 'L', 1)
+            pdf.cell(col_widths[1], 6, inv['no_fact'], 1, 0, 'L', 1)
+            pdf.cell(col_widths[2], 6, inv['empresa'][:45], 1, 0, 'L', 1) # Acortar nombre de empresa si es largo
+            pdf.cell(col_widths[3], 6, inv['currency'], 1, 0, 'C', 1)
+            pdf.cell(col_widths[4], 6, f"{inv['exchange_rate']:.2f}", 1, 0, 'R', 1)
+            pdf.cell(col_widths[5], 6, total_orig_str, 1, 0, 'R', 1)
+            pdf.cell(col_widths[6], 6, total_rd_str, 1, 0, 'R', 1)
+            pdf.cell(col_widths[7], 6, imp_orig_str, 1, 0, 'R', 1)
+            pdf.cell(col_widths[8], 6, imp_rd_str, 1, 1, 'R', 1)
+            fill = not fill
+
+        # --- El Resumen Final no cambia y ya es compatible con la nueva lógica ---
+        pdf.ln(10)
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "Resumen del Cálculo", 0, 1, 'L')
+        
+        pdf.set_font('Arial', '', 11)
+        pdf.cell(90, 8, f"Cálculo basado en {len(selected_invoices)} facturas seleccionadas.", 0, 1)
+        pdf.cell(90, 8, f"Porcentaje aplicado sobre el total: {summary_data['percent_to_pay']}%", 0, 1)
+        
+        pdf.set_font('Arial', 'B', 11)
+        pdf.cell(90, 8, "Totales por Moneda de Origen:", 0, 1)
+        pdf.set_font('Arial', '', 11)
+        
+        currency_totals = summary_data.get('currency_totals', {})
+        for currency, total in sorted(currency_totals.items()):
+            symbol = currency_symbols.get(currency, currency)
+            pdf.cell(90, 8, f"   - Suma Total Impuestos ({currency}): {symbol} {total:,.2f}", 0, 1)
+
+        pdf.ln(5)
+        pdf.set_font('Arial', 'B', 14)
+        pdf.set_fill_color(220, 220, 220)
+        grand_total = summary_data.get('grand_total_rd', 0.0)
+        pdf.cell(0, 12, f"GRAN TOTAL (CONVERTIDO A RD$): RD$ {grand_total:,.2f}", 1, 1, 'C', 1)
+
+        pdf.output(save_path)
+        return True, "Reporte de impuestos y retenciones generado exitosamente."
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, f"No se pudo generar el PDF: {e}"
+
+### Archivo: settings_window.py
+
+# Archivo: settings_window.py (Versión 100% Manual y Flexible)
+
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog, filedialog
+import os # Necesitamos importar 'os'
+
+class SettingsWindow(tk.Toplevel):
+    def __init__(self, parent, controller):
+        super().__init__(parent.root)
+        self.parent = parent
+        self.controller = controller
+
+        self.title("Configuración")
+        self.geometry("600x650")
+        self.resizable(False, False)
+        self.grab_set()
+
+        self.company_vars = {
+            'company_name': tk.StringVar(), 'company_rnc': tk.StringVar(), 'company_address': tk.StringVar()
+        }
+        self.settings_vars = {}
+        
+        self._build_ui()
+        self._load_settings()
+
+    def _build_ui(self):
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Frame de Datos de Empresa Activa (sin cambios)
+        company_frame = ttk.LabelFrame(main_frame, text="Datos de la Empresa Activa", padding=10)
+        company_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(company_frame, text="Nombre:").grid(row=0, column=0, sticky="w", padx=5, pady=3)
+        ttk.Entry(company_frame, textvariable=self.company_vars['company_name'], width=50).grid(row=0, column=1, sticky="ew", padx=5, pady=3)
+        ttk.Label(company_frame, text="RNC:").grid(row=1, column=0, sticky="w", padx=5, pady=3)
+        ttk.Entry(company_frame, textvariable=self.company_vars['company_rnc'], width=50).grid(row=1, column=1, sticky="ew", padx=5, pady=3)
+        ttk.Label(company_frame, text="Dirección:").grid(row=2, column=0, sticky="w", padx=5, pady=3)
+        ttk.Entry(company_frame, textvariable=self.company_vars['company_address'], width=50).grid(row=2, column=1, sticky="ew", padx=5, pady=3)
+        company_frame.columnconfigure(1, weight=1)
+
+        # Frame de Carpeta de Origen (Descargas)
+        downloads_frame = ttk.LabelFrame(main_frame, text="Carpeta de Origen (ej: Descargas de WhatsApp)", padding=10)
+        downloads_frame.pack(fill=tk.X, pady=(0, 10))
+        self.downloads_path_var = tk.StringVar()
+        downloads_entry = ttk.Entry(downloads_frame, textvariable=self.downloads_path_var, state="readonly")
+        downloads_entry.grid(row=0, column=0, sticky="ew", padx=5)
+        downloads_btn = ttk.Button(downloads_frame, text="Seleccionar...", command=self._browse_downloads_folder)
+        downloads_btn.grid(row=0, column=1, padx=(5, 0))
+        downloads_frame.columnconfigure(0, weight=1)
+
+        # Frame de Carpeta de Destino (Anexos)
+        path_frame = ttk.LabelFrame(main_frame, text="Carpeta de Destino (ej: Carpeta en Dropbox)", padding=10)
+        path_frame.pack(fill=tk.X, pady=(0, 10))
+        self.attachment_path_var = tk.StringVar()
+        path_entry = ttk.Entry(path_frame, textvariable=self.attachment_path_var, state="readonly")
+        path_entry.grid(row=0, column=0, sticky="ew", padx=5)
+        browse_btn = ttk.Button(path_frame, text="Seleccionar...", command=self._browse_folder)
+        browse_btn.grid(row=0, column=1, padx=(5, 0))
+        path_frame.columnconfigure(0, weight=1)
+        
+        # El resto del UI no cambia
+        calc_frame = ttk.LabelFrame(main_frame, text="Valores por Defecto de la Calculadora", padding=10)
+        calc_frame.pack(fill=tk.X, pady=10)
+        # ... (contenido de calc_frame)
+        self.settings_vars['def_itbis_perc'] = tk.StringVar()
+        self.settings_vars['def_total_perc'] = tk.StringVar()
+        ttk.Label(calc_frame, text="Retención ITBIS (%):").grid(row=0, column=0, sticky="w", padx=5, pady=3)
+        ttk.Entry(calc_frame, textvariable=self.settings_vars['def_itbis_perc']).grid(row=0, column=1, padx=5)
+        ttk.Label(calc_frame, text="Retención Total (%):").grid(row=1, column=0, sticky="w", padx=5, pady=3)
+        ttk.Entry(calc_frame, textvariable=self.settings_vars['def_total_perc']).grid(row=1, column=1, padx=5)
+        
+        curr_frame = ttk.LabelFrame(main_frame, text="Gestión de Monedas", padding=10)
+        curr_frame.pack(fill=tk.BOTH, expand=True)
+        # ... (contenido de curr_frame)
+        self.currency_listbox = tk.Listbox(curr_frame)
+        self.currency_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        curr_buttons_frame = ttk.Frame(curr_frame)
+        curr_buttons_frame.pack(side=tk.LEFT, fill=tk.Y)
+        ttk.Button(curr_buttons_frame, text="Añadir...", command=self._add_currency).pack(pady=2, fill=tk.X)
+        ttk.Button(curr_buttons_frame, text="Eliminar", command=self._delete_currency).pack(pady=2, fill=tk.X)
+        
+        action_frame = ttk.Frame(main_frame)
+        action_frame.pack(fill=tk.X, pady=(15, 0))
+        ttk.Button(action_frame, text="Cancelar", command=self.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(action_frame, text="Guardar Cambios", command=self._save_settings, style="Accent.TButton").pack(side=tk.RIGHT)
+
+    def _browse_downloads_folder(self):
+        path = filedialog.askdirectory(title="Selecciona tu carpeta de Descargas")
+        if path: self.downloads_path_var.set(path)
+
+    def _browse_folder(self):
+        path = filedialog.askdirectory(title="Selecciona la carpeta raíz para guardar los comprobantes")
+        if path: self.attachment_path_var.set(path)
+
+    def _load_settings(self):
+        company_id = self.parent.get_current_company_id()
+        if company_id:
+            details = self.controller.get_company_details(company_id)
+            if details:
+                self.company_vars['company_name'].set(details.get('name', ''))
+                self.company_vars['company_rnc'].set(details.get('rnc', ''))
+                self.company_vars['company_address'].set(details.get('address', ''))
+
+        self.downloads_path_var.set(self.controller.get_setting('downloads_folder_path', ''))
+        self.attachment_path_var.set(self.controller.get_setting('attachment_base_path', ''))
+        for key, var in self.settings_vars.items():
+            var.set(self.controller.get_setting(key, default=""))
+        
+        self.currency_listbox.delete(0, tk.END)
+        for currency in self.controller.get_all_currencies():
+            self.currency_listbox.insert(tk.END, currency)
+
+    def _save_settings(self):
+        try:
+            company_id = self.parent.get_current_company_id()
+            if company_id:
+                self.controller.update_company(
+                    company_id, self.company_vars['company_name'].get(),
+                    self.company_vars['company_rnc'].get(), self.company_vars['company_address'].get()
+                )
+                self.parent._populate_company_selector()
+
+            self.controller.set_setting('downloads_folder_path', self.downloads_path_var.get())
+            self.controller.set_setting('attachment_base_path', self.attachment_path_var.get())
+            for key, var in self.settings_vars.items():
+                self.controller.set_setting(key, var.get())
+            
+            currencies_to_save = list(self.currency_listbox.get(0, tk.END))
+            self.controller.save_currencies(currencies_to_save)
+            messagebox.showinfo("Éxito", "Configuración guardada correctamente.", parent=self)
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo guardar la configuración: {e}", parent=self)
+
+    # Métodos de moneda (sin cambios)
+    def _add_currency(self):
+        new_currency = simpledialog.askstring("Añadir Moneda", "Introduce el símbolo (ej. EUR):", parent=self)
+        if new_currency and new_currency.strip() and new_currency.upper() not in self.currency_listbox.get(0, tk.END):
+            self.currency_listbox.insert(tk.END, new_currency.upper())
+    def _delete_currency(self):
+        selected_indices = self.currency_listbox.curselection()
+        if not selected_indices: return
+        for i in reversed(selected_indices): self.currency_listbox.delete(i)
+
+### Archivo: third_party_reprt_window.py
+
+# Crea este nuevo archivo: third_party_report_window.py
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+class ThirdPartyReportWindow(tk.Toplevel):
+    def __init__(self, parent, controller):
+        super().__init__(parent.root)
+        self.parent = parent
+        self.controller = controller
+
+        self.title("Reporte por Cliente / Proveedor")
+        self.geometry("900x600")
+        self.grab_set()
+
+        self.selected_rnc = None
+        self._build_ui()
+
+    def _build_ui(self):
+        # --- Panel de Búsqueda ---
+        search_frame = ttk.LabelFrame(self, text="1. Buscar Cliente o Proveedor", padding=10)
+        search_frame.pack(padx=10, pady=10, fill=tk.X)
+
+        ttk.Label(search_frame, text="Buscar por Nombre o RNC:").grid(row=0, column=0, padx=5, pady=5)
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=50)
+        self.search_entry.grid(row=0, column=1, padx=5, pady=5)
+        self.search_entry.bind("<KeyRelease>", self._on_keyup)
+
+        ttk.Button(search_frame, text="Generar Reporte", command=self._generate_report, style="Accent.TButton").grid(row=0, column=2, padx=10, pady=5, ipady=5)
+        
+        self.suggestion_listbox = tk.Listbox(search_frame, height=4)
+        self.suggestion_listbox.grid(row=1, column=1, sticky="ew", padx=5)
+        self.suggestion_listbox.grid_remove()
+        self.suggestion_listbox.bind("<<ListboxSelect>>", self._on_suggestion_select)
+        search_frame.columnconfigure(1, weight=1)
+
+        # --- Panel de Resultados ---
+        results_frame = ttk.Frame(self, padding=10)
+        results_frame.pack(fill=tk.BOTH, expand=True)
+        
+        summary_frame = ttk.LabelFrame(results_frame, text="Resumen de Transacciones", padding=10)
+        summary_frame.pack(fill=tk.X, pady=5)
+        
+        self.total_ingresos_lbl = ttk.Label(summary_frame, text="Total Ingresado de esta Empresa: RD$ 0.00", font=("Arial", 11, "bold"), foreground="#006400")
+        self.total_ingresos_lbl.pack(anchor="w")
+        self.total_gastos_lbl = ttk.Label(summary_frame, text="Total Gastado en esta Empresa: RD$ 0.00", font=("Arial", 11, "bold"), foreground="#C70039")
+        self.total_gastos_lbl.pack(anchor="w")
+
+        # Tablas
+        paned_window = tk.PanedWindow(results_frame, orient=tk.VERTICAL, sashrelief=tk.RAISED)
+        paned_window.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.emitted_tree = self._create_treeview(paned_window, "Facturas Emitidas a esta Empresa (Ingresos)")
+        self.expenses_tree = self._create_treeview(paned_window, "Facturas Recibidas de esta Empresa (Gastos)")
+
+    def _create_treeview(self, parent, title):
+        frame = ttk.Frame(parent)
+        ttk.Label(frame, text=title, font=("Arial", 10, "bold")).pack(anchor="w")
+        columns = ('Fecha', 'No. Fact.', 'ITBIS RD$', 'Total RD$')
+        tree = ttk.Treeview(frame, columns=columns, show='headings')
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=150, anchor='w' if "Fecha" in col else 'e')
+        
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        parent.add(frame)
+        return tree
+
+    def _on_keyup(self, event):
+        query = self.search_var.get()
+        self.selected_rnc = None # Limpiar RNC si el usuario sigue escribiendo
+        if len(query) < 2:
+            self.suggestion_listbox.grid_remove()
+            return
+
+        results = self.controller.search_third_parties(query, search_by='name' if query[0].isalpha() else 'rnc')
+        self.suggestion_listbox.delete(0, tk.END)
+        if results:
+            self.suggestion_listbox.grid()
+            for item in results: self.suggestion_listbox.insert(tk.END, f"{item['rnc']} - {item['name']}")
+        else: self.suggestion_listbox.grid_remove()
+
+    def _on_suggestion_select(self, event):
+        if not self.suggestion_listbox.curselection(): return
+        selection = self.suggestion_listbox.get(self.suggestion_listbox.curselection())
+        self.selected_rnc, name = selection.split(' - ', 1)
+        
+        self.search_var.set(name) # Poner el nombre completo en el Entry
+        self.suggestion_listbox.grid_remove()
+
+    def _generate_report(self):
+        if not self.selected_rnc:
+            messagebox.showwarning("Sin Selección", "Por favor, busca y selecciona una empresa de la lista de sugerencias.", parent=self)
+            return
+
+        company_id = self.parent.get_current_company_id()
+        report_data = self.controller.get_report_by_third_party(company_id, self.selected_rnc)
+        
+        # Limpiar tablas
+        for tree in [self.emitted_tree, self.expenses_tree]:
+            for item in tree.get_children(): tree.delete(item)
+        
+        if not report_data or (not report_data['emitted_invoices'] and not report_data['expense_invoices']):
+            messagebox.showinfo("Sin Datos", "No se encontraron transacciones para la empresa seleccionada.", parent=self)
+            self.total_ingresos_lbl.config(text="Total Ingresado de esta Empresa: RD$ 0.00")
+            self.total_gastos_lbl.config(text="Total Gastado en esta Empresa: RD$ 0.00")
+            return
+
+        # Poblar resumen y tablas
+        summary = report_data['summary']
+        self.total_ingresos_lbl.config(text=f"Total Ingresado de esta Empresa: RD$ {summary['total_ingresos']:,.2f}")
+        self.total_gastos_lbl.config(text=f"Total Gastado en esta Empresa: RD$ {summary['total_gastos']:,.2f}")
+
+        for f in report_data['emitted_invoices']:
+            itbis_rd = f['itbis'] * f['exchange_rate']
+            self.emitted_tree.insert('', 'end', values=(f['invoice_date'], f['invoice_number'], f"{itbis_rd:,.2f}", f"{f['total_amount_rd']:,.2f}"))
+        
+        for f in report_data['expense_invoices']:
+            itbis_rd = f['itbis'] * f['exchange_rate']
+            self.expenses_tree.insert('', 'end', values=(f['invoice_date'], f['invoice_number'], f"{itbis_rd:,.2f}", f"{f['total_amount_rd']:,.2f}"))
+
+### Archivo: utils.py
+
+# Archivo nuevo: utils.py
+
+import os
+import json
+
+def find_dropbox_folder():
+    """
+    Encuentra la ruta de la carpeta de Dropbox personal en Windows.
+    Busca en las ubicaciones estándar del archivo de configuración de Dropbox.
+    Devuelve la ruta como un string o None si no se encuentra.
+    """
+    info_path_options = [
+        os.path.join(os.getenv('APPDATA'), 'Dropbox', 'info.json'),
+        os.path.join(os.getenv('LOCALAPPDATA'), 'Dropbox', 'info.json')
+    ]
+
+    for info_path in info_path_options:
+        if os.path.exists(info_path):
+            try:
+                with open(info_path, 'r') as f:
+                    data = json.load(f)
+                    # La ruta está anidada dentro de la clave 'personal'
+                    path = data.get('personal', {}).get('path')
+                    if path and os.path.isdir(path):
+                        return path
+            except (json.JSONDecodeError, KeyError):
+                # El archivo podría estar corrupto o tener un formato inesperado
+                continue
+    return None
+
+
+
+Nuestro flujo de trabajo será el siguiente:
+1.  Yo te presentaré Las mejoras que quiero hacer
+2.  Tú analizarás mi petición en el contexto del código que te he proporcionado.
+3.  Me proporcionarás el código de los metodos completos y corregidos, no de los archivos completos, solo de los metodos  clases a modificar o agregar para los métodos o clases que necesiten ser modificados, explicando los cambios de forma clara y concisa.
+4.  Yo implementaré tus sugerencias y te informaré del resultado o de cualquier nuevo error para que podamos solucionarlo.
+

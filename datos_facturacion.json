@@ -1,0 +1,191 @@
+{
+    "empresas": [
+        {
+            "RNC": "131727115",
+            "Nombre": "ZOEC CIVIL SRL",
+            "Dirección": "CARLOS HERNANDEZ 19",
+            "Teléfono": "8295487344"
+        },
+        {
+            "RNC": "131273335",
+            "Nombre": "FEDASA CONSTRUCTORA Y SERVICIOS SRL",
+            "Dirección": "COLOMBIA",
+            "Teléfono": "8099999999"
+        },
+        {
+            "RNC": "131050192",
+            "Nombre": "CARVAJAL DIAZ SRL",
+            "Dirección": "MALAGA",
+            "Teléfono": "8095609728"
+        },
+        {
+            "RNC": "131644244",
+            "Nombre": "EXSELICON SRL",
+            "Dirección": "30 DE MAYO",
+            "Teléfono": "8098095846"
+        },
+        {
+            "RNC": "132042751",
+            "Nombre": "BARNHOUSE SERVICES SRL",
+            "Dirección": "CH 19",
+            "Teléfono": "8095445555"
+        },
+        {
+            "RNC": "132174488",
+            "Nombre": "CONSTRUCTORA BOREAS CC",
+            "Dirección": "PIANTINI",
+            "Teléfono": "809-955-1516"
+        },
+        {
+            "RNC": "131709486",
+            "Nombre": "CONSTRUCTORA RETRO SRL",
+            "Dirección": "ISABEL AGUIAR",
+            "Teléfono": "809-877-8574"
+        }
+    ],
+    "transacciones": [
+        {
+            "tipo": "factura",
+            "fecha": "2025-06-29",
+            "num_factura": "B0100000363",
+            "emisora": "CONSTRUCTORA BOREAS CC",
+            "receptora": "CARVAJAL DIAZ SRL",
+            "subtotal": 562500.0,
+            "itbis": 0.0,
+            "total": 562500.0,
+            "uuid": "9cf1d1a2-a3e9-4f58-8e09-f8eade981718"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2025-05-29",
+            "num_factura": "B0100000035",
+            "emisora": "EXSELICON SRL",
+            "receptora": "CARVAJAL DIAZ SRL",
+            "subtotal": 7043693.9,
+            "itbis": 0.0,
+            "total": 7043693.9,
+            "uuid": "88f44861-142a-4a05-8c0b-a8d5c27f6544"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2025-03-30",
+            "num_factura": "B0100000026",
+            "emisora": "FEDASA CONSTRUCTORA Y SERVICIOS SRL",
+            "receptora": "BARNHOUSE SERVICES SRL",
+            "subtotal": 558900.0,
+            "itbis": 0.0,
+            "total": 558900.0,
+            "uuid": "2c241192-cc7b-4401-bfc3-d9b66cbcd7d8"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2025-03-31",
+            "num_factura": "B0100000027",
+            "emisora": "FEDASA CONSTRUCTORA Y SERVICIOS SRL",
+            "receptora": "EXSELICON SRL",
+            "subtotal": 447500.0,
+            "itbis": 80550.0,
+            "total": 528050.0,
+            "uuid": "f5338f89-a964-42d0-86d3-ca3147428665"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2025-06-26",
+            "num_factura": "B0100000028",
+            "emisora": "FEDASA CONSTRUCTORA Y SERVICIOS SRL",
+            "receptora": "EXSELICON SRL",
+            "subtotal": 1561000.0,
+            "itbis": 280980.0,
+            "total": 1841980.0,
+            "uuid": "1705c2fa-a705-451f-94c1-193b89230be4"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2023-12-28",
+            "num_factura": "B0100000042",
+            "emisora": "CARVAJAL DIAZ SRL",
+            "receptora": "CONSTRUCTORA BOREAS CC",
+            "subtotal": 3335138.0,
+            "itbis": 0.0,
+            "total": 3335138.0,
+            "uuid": "5adbf932-9335-4b56-9fb2-197e83be9d01"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2024-12-25",
+            "num_factura": "B0100000044",
+            "emisora": "CARVAJAL DIAZ SRL",
+            "receptora": "ZOEC CIVIL SRL",
+            "subtotal": 7047172.0,
+            "itbis": 0.0,
+            "total": 7047172.0,
+            "uuid": "4e292d6f-d118-4372-b4bf-0e709a2ccfba"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2024-12-06",
+            "num_factura": "B0100000045",
+            "emisora": "CARVAJAL DIAZ SRL",
+            "receptora": "BARNHOUSE SERVICES SRL",
+            "subtotal": 1311250.0,
+            "itbis": 236025.0,
+            "total": 1547275.0,
+            "uuid": "7da1cf8a-84dc-4309-98d6-67b5324e70f0"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2024-12-06",
+            "num_factura": "B0100000046",
+            "emisora": "CARVAJAL DIAZ SRL",
+            "receptora": "BARNHOUSE SERVICES SRL",
+            "subtotal": 3085500.0,
+            "itbis": 50490.0,
+            "total": 3135990.0,
+            "uuid": "107f1edb-b881-4f27-af45-e6d68daab4d5"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2024-12-22",
+            "num_factura": "B0100000047",
+            "emisora": "CARVAJAL DIAZ SRL",
+            "receptora": "FEDASA CONSTRUCTORA Y SERVICIOS SRL",
+            "subtotal": 22165000.0,
+            "itbis": 362700.0,
+            "total": 22527700.0,
+            "uuid": "2a2dcb24-8d5f-4eb0-a2ff-edb75cc1358d"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2024-12-28",
+            "num_factura": "B0100000048",
+            "emisora": "CARVAJAL DIAZ SRL",
+            "receptora": "CONSTRUCTORA RETRO SRL",
+            "subtotal": 6517361.68,
+            "itbis": 106647.74,
+            "total": 6624009.42,
+            "uuid": "20f36b85-96e4-416b-aabf-0de1d865d79d"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2025-02-10",
+            "num_factura": "B0100000049",
+            "emisora": "CARVAJAL DIAZ SRL",
+            "receptora": "BARNHOUSE SERVICES SRL",
+            "subtotal": 959700.0,
+            "itbis": 172746.0,
+            "total": 1132446.0,
+            "uuid": "04d7ee6f-8cfa-4741-9c3f-5a5e1ae1542b"
+        },
+        {
+            "tipo": "factura",
+            "fecha": "2025-07-23",
+            "num_factura": "B0100000030",
+            "emisora": "FEDASA CONSTRUCTORA Y SERVICIOS SRL",
+            "receptora": "BARNHOUSE SERVICES SRL",
+            "subtotal": 1578750.0,
+            "itbis": 284175.0,
+            "total": 1862925.0,
+            "uuid": "bb582afe-d5f9-4b59-bc53-242d039660da"
+        }
+    ]
+}
