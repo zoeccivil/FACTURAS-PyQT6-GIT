@@ -369,7 +369,8 @@ class ModernDashboard(QMainWindow):
                 icon = qta.icon(icon_name, color='#94A3B8')
                 btn.setIcon(icon)
                 btn.setText(f"  {text}")
-            except:
+            except Exception as e:
+                # Fallback if icon not found
                 btn.setText(text)
         else:
             # Fallback to emoji/text icons

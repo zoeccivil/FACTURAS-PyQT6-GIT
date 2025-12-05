@@ -6,20 +6,25 @@ Provides centralized Firebase access for Firestore and Storage operations.
 import os
 import json
 from typing import Optional, Dict, Any
+import threading
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
 import config_manager
 
 
 class FirebaseClient:
-    """Singleton client for Firebase operations"""
+    """Singleton client for Firebase operations (thread-safe)"""
     
     _instance = None
+    _lock = threading.Lock()
     _initialized = False
     
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(FirebaseClient, cls).__new__(cls)
+            with cls._lock:
+                # Double-check locking pattern
+                if cls._instance is None:
+                    cls._instance = super(FirebaseClient, cls).__new__(cls)
         return cls._instance
     
     def __init__(self):

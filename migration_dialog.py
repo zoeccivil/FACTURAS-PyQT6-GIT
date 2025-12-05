@@ -86,24 +86,29 @@ class MigrationWorker(QThread):
                 return
             
             try:
-                # Delete all documents in collection
-                docs = db.collection(collection_name).limit(500).stream()
-                batch = db.batch()
-                count = 0
-                
-                for doc in docs:
-                    batch.delete(doc.reference)
-                    count += 1
+                # Delete all documents in collection (with pagination for large collections)
+                deleted_total = 0
+                while True:
+                    docs = db.collection(collection_name).limit(500).stream()
+                    batch = db.batch()
+                    count = 0
                     
-                    if count % 100 == 0:
-                        batch.commit()
-                        batch = db.batch()
-                
-                if count % 100 != 0:
+                    for doc in docs:
+                        batch.delete(doc.reference)
+                        count += 1
+                    
+                    if count == 0:
+                        break  # No more documents
+                    
                     batch.commit()
+                    deleted_total += count
+                    
+                    # Continue if we hit the limit (might be more)
+                    if count < 500:
+                        break
                 
-                if count > 0:
-                    self.log_message.emit(f"  Eliminados {count} documentos de '{collection_name}'", "INFO")
+                if deleted_total > 0:
+                    self.log_message.emit(f"  Eliminados {deleted_total} documentos de '{collection_name}'", "INFO")
                     
             except Exception as e:
                 self.log_message.emit(f"  Error limpiando '{collection_name}': {e}", "WARNING")
