@@ -1,6 +1,7 @@
 import sys
 from PyQt6.QtWidgets import QApplication
 from app_gui_qt import MainApplicationQt
+from modern_gui import ModernDashboard
 
 from logic_qt import LogicControllerQt
 import os
@@ -15,11 +16,20 @@ def main():
                 config = json.load(f)
             except Exception:
                 config = {}
-    db_path = config.get("facturas_config", "database.db")
+    db_path = config.get("facturas_config") or config.get("database_path", "facturas_db.db")
+    
+    # Check if modern UI should be used (default: True)
+    use_modern_ui = config.get("use_modern_ui", True)
 
     app = QApplication(sys.argv)
     logic = LogicControllerQt(db_path)
-    main_win = MainApplicationQt(logic)
+    
+    # Create main window based on preference
+    if use_modern_ui:
+        main_win = ModernDashboard(logic)
+    else:
+        main_win = MainApplicationQt(logic)
+    
     main_win.show()
     sys.exit(app.exec())
 
