@@ -26,6 +26,7 @@ from attachment_editor_window_qt import AttachmentEditorWindowQt
 from company_management_window_qt import CompanyManagementWindow # Asegúrate que la clase se llame así en el archivo
 from firebase_config_dialog import FirebaseConfigDialog
 from migration_dialog import MigrationDialog
+from backup_dialog import BackupDialog
 
 
 class MainApplicationQt(QMainWindow):
@@ -170,6 +171,8 @@ class MainApplicationQt(QMainWindow):
         tools_menu = menubar.addMenu("Herramientas")
         tools_menu.addAction("Migrador de Datos (SQLite → Firebase)", self._open_migration_dialog)
         tools_menu.addAction("Configuración Firebase", self._open_firebase_config)
+        tools_menu.addSeparator()
+        tools_menu.addAction("Gestionar Copias de Seguridad...", self._open_backup_manager)
 
     def _create_main_layout(self, layout):
         if layout == "default":
@@ -788,6 +791,15 @@ class MainApplicationQt(QMainWindow):
             dialog.exec()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error al abrir migrador de datos:\n{e}")
+    
+    def _open_backup_manager(self):
+        """Abre el gestor de copias de seguridad"""
+        try:
+            db_path = self.controller.db_path
+            dialog = BackupDialog(self, db_path)
+            dialog.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error al abrir gestor de copias:\n{e}")
 
     def _open_retention_calculator(self):
         """
