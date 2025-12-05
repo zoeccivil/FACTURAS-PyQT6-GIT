@@ -24,6 +24,8 @@ from report_window_qt import ReportWindowQt
 from third_party_report_window_qt import ThirdPartyReportWindowQt
 from attachment_editor_window_qt import AttachmentEditorWindowQt
 from company_management_window_qt import CompanyManagementWindow # Asegúrate que la clase se llame así en el archivo
+from firebase_config_dialog import FirebaseConfigDialog
+from migration_dialog import MigrationDialog
 
 
 class MainApplicationQt(QMainWindow):
@@ -163,6 +165,11 @@ class MainApplicationQt(QMainWindow):
         theme_menu = options_menu.addMenu("Cambiar Tema")
         for theme in ["Fusion", "Windows", "WindowsVista"]:
             theme_menu.addAction(theme, lambda checked=False, t=theme: self._change_theme(t))
+        
+        # --- Menú Herramientas (NUEVO)
+        tools_menu = menubar.addMenu("Herramientas")
+        tools_menu.addAction("Migrador de Datos (SQLite → Firebase)", self._open_migration_dialog)
+        tools_menu.addAction("Configuración Firebase", self._open_firebase_config)
 
     def _create_main_layout(self, layout):
         if layout == "default":
@@ -765,6 +772,22 @@ class MainApplicationQt(QMainWindow):
                 self.controller.reconnect()
                 self._populate_company_selector()
                 self._refresh_dashboard()
+    
+    def _open_firebase_config(self):
+        """Abre el diálogo de configuración de Firebase"""
+        try:
+            dialog = FirebaseConfigDialog(self)
+            dialog.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error al abrir configuración de Firebase:\n{e}")
+    
+    def _open_migration_dialog(self):
+        """Abre el diálogo de migración de datos SQLite → Firebase"""
+        try:
+            dialog = MigrationDialog(self, self.controller)
+            dialog.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error al abrir migrador de datos:\n{e}")
 
     def _open_retention_calculator(self):
         """

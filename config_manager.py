@@ -31,4 +31,22 @@ def get_db_path():
 
 def set_db_path(path):
     """Guarda la nueva ruta de la BD en el config."""
-    save_config({"database_path": path})
+    config = load_config()
+    config["database_path"] = path
+    save_config(config)
+
+
+def get_firebase_config():
+    """Obtiene la configuración de Firebase desde el config, o devuelve None."""
+    config = load_config()
+    return config.get("firebase_config")
+
+
+def set_firebase_config(credentials_path, bucket_name):
+    """Guarda la configuración de Firebase en el config."""
+    config = load_config()
+    config["firebase_config"] = {
+        "credentials_path": credentials_path,
+        "bucket_name": bucket_name
+    }
+    save_config(config)
