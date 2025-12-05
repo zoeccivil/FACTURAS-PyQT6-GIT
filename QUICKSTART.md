@@ -8,6 +8,12 @@
 pip install -r requirements.txt
 ```
 
+**Nota:** Si obtienes errores de importación al ejecutar la aplicación, verifica que todas las dependencias se instalaron correctamente ejecutando:
+
+```bash
+python test_imports.py
+```
+
 ### 2. Ejecutar la Aplicación
 
 ```bash
@@ -150,6 +156,19 @@ El dashboard muestra automáticamente:
 (Por implementar - sugerencias bienvenidas)
 
 ## 🆘 Problemas Comunes
+
+### "ModuleNotFoundError: No module named 'PyQt6'" (u otros módulos)
+
+**Solución:**
+1. Instala todas las dependencias:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Verifica la instalación:
+   ```bash
+   python test_imports.py
+   ```
+3. Si usas Windows, asegúrate de ejecutar desde el mismo entorno donde instalaste las dependencias
 
 ### "No se puede conectar a Firebase"
 

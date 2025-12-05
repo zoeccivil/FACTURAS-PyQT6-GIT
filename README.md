@@ -244,6 +244,35 @@ FACTURAS-PyQT6-GIT/
 
 ## 🐛 Solución de Problemas
 
+### Error al iniciar la aplicación (ModuleNotFoundError)
+
+Si ves un error como `ModuleNotFoundError: No module named 'PyQt6'` o similar:
+
+1. **Instala todas las dependencias:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Verifica la instalación con el script de prueba:**
+   ```bash
+   python test_imports.py
+   ```
+   Este script verificará que todos los módulos necesarios estén instalados correctamente.
+
+3. **Si el problema persiste:**
+   - Asegúrate de usar Python 3.8 o superior: `python --version`
+   - Considera usar un entorno virtual:
+     ```bash
+     python -m venv venv
+     # Windows:
+     venv\Scripts\activate
+     # Linux/Mac:
+     source venv/bin/activate
+     
+     pip install -r requirements.txt
+     python main_qt.py
+     ```
+
 ### Firebase no conecta
 
 1. Verifica que el archivo JSON sea de tipo `service_account`
