@@ -340,6 +340,30 @@ class ModernMainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "No disponible", "La función de backup no está disponible en el controlador.")
 
+    def _open_tax_calculation_manager(self):
+        """
+        Opens the tax calculation management window.
+        This window allows users to create and manage tax calculations.
+        """
+        try:
+            from tax_calculation_management_window_qt import TaxCalculationManagementWindowQt
+            dlg = TaxCalculationManagementWindowQt(self, self.controller)
+            dlg.exec()
+            # Refresh dashboard after closing (in case changes were made)
+            self._safe_refresh_dashboard()
+        except ImportError as e:
+            QMessageBox.warning(
+                self, 
+                "Módulo no disponible", 
+                f"El módulo de cálculo de impuestos no está disponible:\n{e}"
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, 
+                "Error", 
+                f"No se pudo abrir el gestor de cálculo de impuestos:\n{e}"
+            )
+
     # ===== Sidebar =====
     def _build_sidebar(self) -> QWidget:
         sb = QFrame()
@@ -585,14 +609,8 @@ class ModernMainWindow(QMainWindow):
         self._apply_type_filter("GASTO")
 
     def _nav_tax(self):
-        # CRITICAL: call existing method
-        if hasattr(self.controller, "_open_tax_calculation_manager"):
-            try:
-                self.controller._open_tax_calculation_manager()
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"No se pudo abrir el gestor de impuestos:\n{e}")
-        else:
-            QMessageBox.information(self, "No disponible", "El módulo de cálculo de impuestos no está disponible.")
+        # Call the tax calculation manager
+        self._open_tax_calculation_manager()
         self._set_active(self.btn_tax)
 
     def _nav_itbis(self):
