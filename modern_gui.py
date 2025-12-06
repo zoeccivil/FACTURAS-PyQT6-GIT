@@ -396,8 +396,11 @@ class ModernMainWindow(QMainWindow):
                 self.company_combo.clear()
                 companies = self.controller.get_all_companies() or []
                 for c in companies:
-                    # c is a Row object from SQLite, so we need to get the 'name' field
-                    company_name = c['name'] if isinstance(c, dict) or hasattr(c, '__getitem__') else str(c)
+                    # SQLite Row objects support item access with keys
+                    try:
+                        company_name = c['name']
+                    except (KeyError, TypeError):
+                        company_name = str(c)
                     self.company_combo.addItem(company_name)
             except Exception:
                 pass
@@ -607,16 +610,14 @@ class ModernMainWindow(QMainWindow):
         # CRITICAL: Open tax calculation manager directly
         if TaxCalculationManagementWindowQt is None:
             QMessageBox.information(self, "No disponible", "El módulo de cálculo de impuestos no está disponible.")
-            self._set_active(self.btn_tax)
-            return
-        
-        try:
-            dlg = TaxCalculationManagementWindowQt(self, self.controller)
-            dlg.exec()
-            # Refresh dashboard after closing
-            self._safe_refresh_dashboard()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudo abrir el gestor de impuestos:\n{e}")
+        else:
+            try:
+                dlg = TaxCalculationManagementWindowQt(self, self.controller)
+                dlg.exec()
+                # Refresh dashboard after closing
+                self._safe_refresh_dashboard()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"No se pudo abrir el gestor de impuestos:\n{e}")
         
         self._set_active(self.btn_tax)
 
@@ -662,9 +663,9 @@ class ModernMainWindow(QMainWindow):
             return
         
         try:
-            # Get selected company
-            company_name = self.company_combo.currentText() if hasattr(self, 'company_combo') else None
-            dlg = AddInvoiceWindowQt(self, self.controller, company_name=company_name)
+            # AddInvoiceWindowQt doesn't accept company_name parameter
+            # It uses its own company selector
+            dlg = AddInvoiceWindowQt(self, self.controller, tipo_factura="emitida")
             dlg.exec()
             # Refresh dashboard and table after closing
             self._safe_refresh_dashboard()
