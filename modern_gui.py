@@ -40,6 +40,22 @@ try:
 except Exception:
     show_migration_dialog = None
 
+# Import windows for sidebar actions
+try:
+    from tax_calculation_management_window_qt import TaxCalculationManagementWindowQt
+except Exception:
+    TaxCalculationManagementWindowQt = None
+
+try:
+    from report_window_qt import ReportWindowQt
+except Exception:
+    ReportWindowQt = None
+
+try:
+    from add_invoice_window_qt import AddInvoiceWindowQt
+except Exception:
+    AddInvoiceWindowQt = None
+
 
 STYLESHEET = """
 /* Global */
@@ -375,11 +391,14 @@ class ModernMainWindow(QMainWindow):
         self.company_combo = QComboBox()
         self.company_combo.addItem("Zoec Civil Srl")
         # Hook to controller for companies
-        if hasattr(self.controller, "list_companies"):
+        if hasattr(self.controller, "get_all_companies"):
             try:
                 self.company_combo.clear()
-                for c in self.controller.list_companies() or []:
-                    self.company_combo.addItem(str(c))
+                companies = self.controller.get_all_companies() or []
+                for c in companies:
+                    # c is a Row object from SQLite, so we need to get the 'name' field
+                    company_name = c['name'] if isinstance(c, dict) or hasattr(c, '__getitem__') else str(c)
+                    self.company_combo.addItem(company_name)
             except Exception:
                 pass
         self.company_combo.currentIndexChanged.connect(self._on_company_changed)
@@ -585,14 +604,20 @@ class ModernMainWindow(QMainWindow):
         self._apply_type_filter("GASTO")
 
     def _nav_tax(self):
-        # CRITICAL: call existing method
-        if hasattr(self.controller, "_open_tax_calculation_manager"):
-            try:
-                self.controller._open_tax_calculation_manager()
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"No se pudo abrir el gestor de impuestos:\n{e}")
-        else:
+        # CRITICAL: Open tax calculation manager directly
+        if TaxCalculationManagementWindowQt is None:
             QMessageBox.information(self, "No disponible", "El módulo de cálculo de impuestos no está disponible.")
+            self._set_active(self.btn_tax)
+            return
+        
+        try:
+            dlg = TaxCalculationManagementWindowQt(self, self.controller)
+            dlg.exec()
+            # Refresh dashboard after closing
+            self._safe_refresh_dashboard()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo abrir el gestor de impuestos:\n{e}")
+        
         self._set_active(self.btn_tax)
 
     def _nav_itbis(self):
@@ -608,11 +633,16 @@ class ModernMainWindow(QMainWindow):
     def _nav_reportes(self):
         self.lbl_title.setText("Reportes")
         self._set_active(self.btn_reportes)
-        if hasattr(self.controller, "_open_report_window"):
-            try:
-                self.controller._open_report_window()
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"No se pudo abrir reportes:\n{e}")
+        
+        if ReportWindowQt is None:
+            QMessageBox.information(self, "No disponible", "El módulo de reportes no está disponible.")
+            return
+        
+        try:
+            dlg = ReportWindowQt(self, self.controller)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo abrir reportes:\n{e}")
 
     def _nav_settings(self):
         # For now, reuse Firebase dialog as "configuración"
@@ -626,14 +656,21 @@ class ModernMainWindow(QMainWindow):
 
     # ===== Actions =====
     def _new_invoice(self):
-        # Preserve logic via controller
-        if hasattr(self.controller, "open_add_invoice_window"):
-            try:
-                self.controller.open_add_invoice_window()
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"No se pudo abrir 'Nueva Factura':\n{e}")
-        else:
-            QMessageBox.information(self, "No disponible", "La acción 'Nueva Factura' no está disponible.")
+        # Open the add invoice window directly
+        if AddInvoiceWindowQt is None:
+            QMessageBox.information(self, "No disponible", "La ventana de nueva factura no está disponible.")
+            return
+        
+        try:
+            # Get selected company
+            company_name = self.company_combo.currentText() if hasattr(self, 'company_combo') else None
+            dlg = AddInvoiceWindowQt(self, self.controller, company_name=company_name)
+            dlg.exec()
+            # Refresh dashboard and table after closing
+            self._safe_refresh_dashboard()
+            self._safe_populate_transactions_table()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo abrir 'Nueva Factura':\n{e}")
 
     def _on_company_changed(self, idx: int):
         # Inform controller of company change, then refresh

@@ -268,3 +268,26 @@ class FirebaseConfigDialog(QDialog):
                 "Error",
                 f"Error al probar la conexión:\n\n{e}"
             )
+
+
+def show_firebase_config_dialog(parent=None):
+    """
+    Helper function to show the Firebase configuration dialog.
+    
+    Args:
+        parent: Parent widget for the dialog
+        
+    Returns:
+        bool: True if the user accepted the dialog (clicked Save), False otherwise
+    """
+    try:
+        dialog = FirebaseConfigDialog(parent)
+        result = dialog.exec()
+        return result == QDialog.DialogCode.Accepted
+    except Exception as e:
+        QMessageBox.critical(
+            parent,
+            "Error",
+            f"Error al abrir el diálogo de configuración de Firebase:\n{e}"
+        )
+        return False

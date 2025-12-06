@@ -501,3 +501,37 @@ class MigrationDialog(QDialog):
         self.clean_checkbox.setEnabled(True)
         self.close_btn.setEnabled(True)
         self.cancel_btn.setText("Cerrar")
+
+
+def show_migration_dialog(parent, default_db_path=""):
+    """
+    Helper function to show the migration dialog.
+    
+    Args:
+        parent: Parent widget for the dialog
+        default_db_path: Default SQLite database path (not used currently, 
+                        but kept for future enhancement)
+        
+    Returns:
+        None
+    """
+    try:
+        # Get controller from parent if available
+        controller = getattr(parent, 'controller', None)
+        if controller is None:
+            QMessageBox.warning(
+                parent,
+                "Error",
+                "No se pudo obtener el controlador de la aplicación.\n"
+                "La migración requiere acceso a la base de datos."
+            )
+            return
+        
+        dialog = MigrationDialog(parent, controller)
+        dialog.exec()
+    except Exception as e:
+        QMessageBox.critical(
+            parent,
+            "Error",
+            f"Error al abrir el diálogo de migración:\n{e}"
+        )
