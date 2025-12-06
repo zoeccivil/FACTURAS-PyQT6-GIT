@@ -618,7 +618,7 @@ class ModernMainWindow(QMainWindow):
                 self._safe_refresh_dashboard()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"No se pudo abrir el gestor de impuestos:\n{e}")
-        
+
         self._set_active(self.btn_tax)
 
     def _nav_itbis(self):
@@ -634,11 +634,11 @@ class ModernMainWindow(QMainWindow):
     def _nav_reportes(self):
         self.lbl_title.setText("Reportes")
         self._set_active(self.btn_reportes)
-        
+
         if ReportWindowQt is None:
             QMessageBox.information(self, "No disponible", "El módulo de reportes no está disponible.")
             return
-        
+
         try:
             dlg = ReportWindowQt(self, self.controller)
             dlg.exec()
@@ -661,7 +661,7 @@ class ModernMainWindow(QMainWindow):
         if AddInvoiceWindowQt is None:
             QMessageBox.information(self, "No disponible", "La ventana de nueva factura no está disponible.")
             return
-        
+
         try:
             # AddInvoiceWindowQt doesn't accept company_name parameter
             # It uses its own company selector
