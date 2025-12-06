@@ -501,3 +501,32 @@ class MigrationDialog(QDialog):
         self.clean_checkbox.setEnabled(True)
         self.close_btn.setEnabled(True)
         self.cancel_btn.setText("Cerrar")
+
+
+def show_migration_dialog(parent=None, default_db_path=""):
+    """
+    Helper function to show the SQLite to Firebase migration dialog.
+    
+    Args:
+        parent: Parent widget for the dialog
+        default_db_path: Default database path (optional, currently not used by dialog but available for future)
+        
+    Returns:
+        None: Dialog is modal and handles its own execution
+    """
+    # Get controller from parent if available
+    controller = None
+    if parent and hasattr(parent, 'controller'):
+        controller = parent.controller
+    
+    if not controller:
+        QMessageBox.warning(
+            parent,
+            "Error",
+            "No se pudo acceder al controlador de la aplicación.\n"
+            "La migración requiere acceso a la base de datos."
+        )
+        return
+    
+    dialog = MigrationDialog(parent, controller)
+    dialog.exec()
