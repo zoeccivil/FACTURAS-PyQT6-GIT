@@ -1,7 +1,7 @@
 import sys
 from PyQt6.QtWidgets import QApplication
 from app_gui_qt import MainApplicationQt
-from modern_gui import ModernDashboard
+from modern_gui import ModernMainWindow as ModernDashboard
 
 from logic_qt import LogicControllerQt
 import os
