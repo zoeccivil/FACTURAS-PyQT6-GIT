@@ -515,9 +515,7 @@ def show_migration_dialog(parent=None, default_db_path=""):
         None: Dialog is modal and handles its own execution
     """
     # Get controller from parent if available
-    controller = None
-    if parent and hasattr(parent, 'controller'):
-        controller = parent.controller
+    controller = getattr(parent, 'controller', None) if parent else None
     
     if not controller:
         QMessageBox.warning(
