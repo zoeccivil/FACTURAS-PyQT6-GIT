@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['main_qt.py'],
+    ['launch_modern_gui.py'],
     pathex=[],
     binaries=[],
     datas=[],

@@ -139,6 +139,39 @@ class MainApplicationQt(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Integración", f"No se pudo integrar el menú de empresas: {e}")
 
+
+    def _create_top_menu(self):
+            """Crea el menú Herramientas con acceso a Firebase y Migración."""
+            from PyQt6.QtWidgets import QMenuBar, QMenu
+            from PyQt6.QtGui import QAction
+            
+            try:
+                # Crear barra de menú si no existe en layout
+                menubar = self.menuBar() if hasattr(self, 'menuBar') else QMenuBar(self)
+                
+                # Menú Herramientas
+                herramientas_menu = QMenu("Herramientas", self)
+                menubar.addMenu(herramientas_menu)
+                
+                # Acción 1: Migrador
+                act_migrador = QAction("Migrador de Datos (SQLite → Firebase)", self)
+                act_migrador.triggered.connect(self._open_migration_dialog)
+                herramientas_menu.addAction(act_migrador)
+                
+                # Acción 2: Configuración Firebase
+                act_conf = QAction("Configuración Firebase", self)
+                act_conf.triggered.connect(self._open_firebase_config_dialog)
+                herramientas_menu.addAction(act_conf)
+                
+                # Si no es QMainWindow, intentar añadir al layout
+                if not hasattr(self, 'setMenuBar'):
+                    # Asumiendo que el layout principal es vertical
+                    if self.layout() is not None:
+                        self.layout().setMenuBar(menubar)
+                        
+            except Exception as e:
+                print(f"[UI] Error creando menú Herramientas: {e}")
+                
     def _create_menubar(self):
         menubar = QMenuBar(self)
         self.setMenuBar(menubar)
@@ -1323,4 +1356,30 @@ class MainApplicationQt(QMainWindow):
         dlg = AttachmentEditorWindowQt(self, path)
         dlg.exec()
 
+    def _open_firebase_config_dialog(self):
+            from PyQt6.QtWidgets import QMessageBox
+            try:
+                # Import local para evitar ciclos y errores si el archivo falta
+                from firebase_config_dialog import show_firebase_config_dialog
+                show_firebase_config_dialog(self)
+                # Opcional: Refrescar dashboard si hubo cambios
+                if hasattr(self, "_refresh_dashboard"):
+                    self._refresh_dashboard()
+            except ImportError:
+                QMessageBox.warning(self, "No disponible", 
+                                    "El módulo 'firebase_config_dialog.py' no se encuentra.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Error al abrir configuración: {str(e)}")
 
+    def _open_migration_dialog(self):
+        from PyQt6.QtWidgets import QMessageBox
+        try:
+            from migration_dialog import show_migration_dialog
+            # Buscar ruta db por defecto si existe atributo, sino None
+            default_db = getattr(self, "db_path", "facturas.db") 
+            show_migration_dialog(self, default_db_path=default_db)
+        except ImportError:
+            QMessageBox.warning(self, "No disponible", 
+                                "El módulo 'migration_dialog.py' no se encuentra.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error al abrir migrador: {str(e)}")

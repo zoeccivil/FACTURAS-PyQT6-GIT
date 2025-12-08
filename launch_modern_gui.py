@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Example launcher for the modern GUI with real controller.
-This shows how to integrate modern_gui.py with the existing application.
+Launcher for the modern GUI using the Firebase logic controller.
+
+Esta versión usa LogicControllerFirebase como backend principal.
+Si Firestore no puede inicializarse, intenta guiar al usuario para
+configurar el JSON de Firebase en primer arranque (y no romper).
 """
+
 import sys
 import os
 
@@ -10,94 +14,93 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
+
 from modern_gui import ModernMainWindow, STYLESHEET
-
-
-def find_database():
-    """Find the database file in common locations"""
-    possible_paths = [
-        'facturas_db.db',
-        './facturas_db.db',
-        os.path.join(os.path.dirname(__file__), 'facturas_db.db'),
-        '/home/runner/work/FACTURAS-PyQT6-GIT/FACTURAS-PyQT6-GIT/facturas_db.db'
-    ]
-    
-    for path in possible_paths:
-        if os.path.exists(path):
-            return path
-    
-    return None
+from firebase_config_bootstrap import ensure_firebase_config
 
 
 def main():
-    """Main entry point for the modern GUI application"""
-    # Create Qt application
+    """Main entry point for the modern GUI application (Firebase backend)."""
     app = QApplication(sys.argv)
-    
-    # Apply modern stylesheet
     app.setStyleSheet(STYLESHEET)
-    
-    # Find database
-    db_path = find_database()
-    
-    if not db_path:
-        QMessageBox.warning(
-            None,
-            "Database Not Found",
-            "No se encontró la base de datos facturas_db.db\n\n"
-            "Por favor, asegúrate de que el archivo existe en el directorio actual."
-        )
-        return 1
-    
+
+    # 1) Intentar importar LogicControllerFirebase
     try:
-        # Import and create controller
-        from logic_qt import LogicControllerQt
-        
-        print(f"Loading database: {db_path}")
-        controller = LogicControllerQt(db_path)
-        
-        # Create and show modern window
-        window = ModernMainWindow(controller)
-        window.show()
-        
-        print("Modern GUI launched successfully!")
-        print("=" * 60)
-        print("FACTURAS PRO - MODERN DASHBOARD")
-        print("=" * 60)
-        print(f"Database: {db_path}")
-        print(f"Window Size: {window.width()}x{window.height()}")
-        print("\nFeatures:")
-        print("  • Dark sidebar with navigation")
-        print("  • Real-time KPI cards")
-        print("  • Modern transactions table")
-        print("  • Firebase integration ready")
-        print("  • Month/Year filtering")
-        print("\nMenu Herramientas:")
-        print("  • Configurar Firebase...")
-        print("  • Migrar SQLite → Firebase...")
-        print("  • Crear backup SQL manual")
-        print("=" * 60)
-        
-        # Run the application
-        return app.exec()
-        
+        from logic_firebase import LogicControllerFirebase
     except ImportError as e:
         QMessageBox.critical(
             None,
-            "Import Error",
-            f"No se pudo importar el controlador:\n{e}\n\n"
-            "Asegúrate de que logic_qt.py existe."
+            "Error de importación",
+            f"No se pudo importar logic_firebase:\n{e}\n\n"
+            "Asegúrate de que logic_firebase.py existe y no tiene errores de sintaxis."
         )
         return 1
-    except Exception as e:
-        import traceback
+
+    controller = None
+
+    # 2) Primer intento: inicializar sin config explícita (como antes)
+    try:
+        controller = LogicControllerFirebase()
+    except Exception:
+        controller = None
+
+    # 3) Si no hay _db, entonces pedimos JSON al usuario y reintentamos
+    if controller is None or getattr(controller, "_db", None) is None:
+        cfg = ensure_firebase_config(parent=None)
+        if cfg is None:
+            # Usuario canceló o no se pudo guardar config
+            return 1
+
+        service_json = cfg.get("service_account_json")
+
+        try:
+            # Reintentar con la ruta al JSON (ajusta el nombre del parámetro
+            # según tu implementación de LogicControllerFirebase)
+            controller = LogicControllerFirebase(service_account_json_path=service_json)
+        except TypeError:
+            # Si tu __init__ usa otro nombre o detecta el JSON vía settings,
+            # simplemente reintenta sin parámetros, sabiendo que la ruta
+            # ya quedó guardada en un archivo global que logic_firebase leerá.
+            try:
+                controller = LogicControllerFirebase()
+            except Exception as e:
+                QMessageBox.critical(
+                    None,
+                    "Firebase no configurado",
+                    f"No se pudo inicializar la conexión con Firebase "
+                    f"usando el JSON seleccionado:\n{e}",
+                )
+                return 1
+        except Exception as e:
+            QMessageBox.critical(
+                None,
+                "Firebase no configurado",
+                f"No se pudo inicializar la conexión con Firebase "
+                f"usando el JSON seleccionado:\n{e}",
+            )
+            return 1
+
+    # 4) Verificación mínima: Firestore inicializado
+    if getattr(controller, "_db", None) is None:
         QMessageBox.critical(
             None,
-            "Error",
-            f"Error al iniciar la aplicación:\n{e}\n\n{traceback.format_exc()}"
+            "Firebase no configurado",
+            "No se pudo inicializar la conexión con Firebase.\n\n"
+            "Verifica la configuración en:\n"
+            "  • Herramientas → Configurar Firebase...\n\n"
+            "Asegúrate de que:\n"
+            "  • El archivo de credenciales existe.\n"
+            "  • El project_id es correcto.\n"
         )
         return 1
+
+    # 5) Lanzar ventana principal
+    window = ModernMainWindow(controller)
+    window.show()
+
+    return app.exec()
 
 
 if __name__ == "__main__":
+    print("Modern GUI launched (Firebase backend).")
     sys.exit(main())

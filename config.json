@@ -1,5 +1,7 @@
 {
-  "database_path": "E:/Dropbox/PROGAIN-ARCHIVOS/progain_database.db",
-  "facturas_config": "E:/Dropbox/GESTION FACTURAS/facturas_db.db",
-  "attachments_root": "E:/Dropbox/TRABAJOS/FACTURAS DIGITALES"
+  "facturas_config": {
+    "firebase_credentials_path": "D:/Dropbox/PROGAIN/FACOT/firebase_credentials.json",
+    "firebase_storage_bucket": "facot-app.firebasestorage.app",
+    "firebase_project_id": "facot-app"
+  }
 }

@@ -1,1235 +1,1498 @@
 """
-modern_gui.py - Modern Dashboard UI for Facturas Pro
-Clean Finance UI inspired design with dark sidebar and modern cards.
-Preserves all existing business logic from app_gui_qt.py
+modern_gui.py
+----------------
+Ventana principal moderna para FACTURAS-PyQT6-GIT.
+
+Esta versión:
+- Mantiene el estilo Clean Finance UI.
+- Integra un botón "+ Nueva Factura" con menú:
+    • Factura Emitida (Ingreso)
+    • Factura de Gasto
+- Está preparada para trabajar con un controller Firebase (LogicControllerFirebase),
+  pero sigue siendo compatible con controladores anteriores siempre que implementen
+  los métodos esperados.
 """
+
+from __future__ import annotations
+
+import datetime
+from typing import List, Optional
+
+from PyQt6.QtCore import Qt, QDate, QPoint
+from PyQt6.QtGui import QAction, QColor
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-    QPushButton, QTableWidget, QTableWidgetItem, QFrame, QGridLayout,
-    QMessageBox, QHeaderView, QApplication, QMenuBar, QMenu
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QHBoxLayout,
+    QVBoxLayout,
+    QGridLayout,
+    QLabel,
+    QComboBox,
+    QPushButton,
+    QFrame,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QMenuBar,
+    QMenu,
+    QMessageBox,
 )
-from PyQt6.QtCore import Qt, QDate
-from PyQt6.QtGui import QFont, QColor, QAction
+
 import sys
 
-# Try to import qtawesome for icons, fallback gracefully
+# Optional imports – these modules may not exist in every environment.
 try:
-    import qtawesome as qta
-    QTAWESOME_AVAILABLE = True
-except ImportError:
-    QTAWESOME_AVAILABLE = False
-    print("Warning: qtawesome not available. Icons will be text-only.")
+    import qtawesome as qta  # type: ignore[import-not-found]
+except Exception:
+    qta = None
 
-# Modern stylesheet for Clean Finance UI
-STYLESHEET = """
-/* ============================================
-   GLOBAL STYLES
-   ============================================ */
-QWidget {
-    font-family: "Segoe UI", "Inter", "Roboto", sans-serif;
-    font-size: 10pt;
-}
+try:
+    import migration_dialog  # type: ignore[import-not-found]
+except Exception:
+    migration_dialog = None
 
+try:
+    import firebase_config_dialog  # type: ignore[import-not-found]
+except Exception:
+    firebase_config_dialog = None
+
+from tax_calculation_management_window_qt import TaxCalculationManagementWindowQt
+
+# ---------------------------------------------------------------------------
+# Stylesheet
+# ---------------------------------------------------------------------------
+STYLESHEET: str = """
+/* Base application styles */
 QMainWindow {
     background-color: #F8F9FA;
-}
-
-/* ============================================
-   SIDEBAR STYLES
-   ============================================ */
-#sidebar {
-    background-color: #1E293B;
-    border-right: 1px solid #0F172A;
-}
-
-#sidebar_header {
-    background-color: #1E293B;
-    padding: 16px;
-}
-
-#logo_box {
-    background-color: #3B82F6;
-    border-radius: 8px;
-    color: white;
-    font-weight: bold;
-    font-size: 18px;
-}
-
-#app_title {
-    color: white;
-    font-size: 18px;
-    font-weight: 600;
-}
-
-#company_label {
-    color: #94A3B8;
-    font-size: 10px;
-    font-weight: bold;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-#company_selector {
-    background-color: #0F172A;
-    color: white;
-    border: 1px solid #334155;
-    border-radius: 8px;
-    padding: 10px;
-    font-size: 13px;
-    font-weight: 500;
-}
-
-#company_selector:hover {
-    background-color: #334155;
-}
-
-#company_selector::drop-down {
-    border: none;
-    width: 20px;
-}
-
-#company_selector QAbstractItemView {
-    background-color: #0F172A;
-    color: white;
-    selection-background-color: #3B82F6;
-    border: 1px solid #334155;
-}
-
-/* Navigation buttons */
-#nav_button {
-    background-color: transparent;
-    color: #94A3B8;
-    text-align: left;
-    padding: 12px 16px;
-    border: none;
-    border-radius: 8px;
+    color: #334155;
+    font-family: Inter, Segoe UI, Roboto, sans-serif;
     font-size: 14px;
-    font-weight: 500;
 }
 
-#nav_button:hover {
-    background-color: #0F172A;
-    color: white;
+/* Texto global en QLineEdit */
+QLineEdit {
+    color: #111827;  /* gris muy oscuro, siempre legible sobre fondo claro */
 }
 
-#nav_button_active {
-    background-color: #3B82F6;
-    color: white;
-    text-align: left;
-    padding: 12px 16px;
-    border: none;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: bold;
-}
-
-#config_button {
-    background-color: transparent;
-    color: #94A3B8;
-    text-align: left;
-    padding: 10px 16px;
-    border: none;
-    font-size: 13px;
-}
-
-#config_button:hover {
-    color: white;
-}
-
-/* ============================================
-   CONTENT AREA STYLES
-   ============================================ */
-#content_area {
-    background-color: #F8F9FA;
-}
-
-#header {
-    background-color: white;
+/* Menu bar */
+QMenuBar {
+    background-color: #FFFFFF;
     border-bottom: 1px solid #E5E7EB;
-    min-height: 64px;
-    max-height: 64px;
+    color: #111827;  /* texto oscuro */
+}
+QMenuBar::item {
+    padding: 4px 12px;
+    background: transparent;
+    color: #111827;  /* texto oscuro en items */
+}
+QMenuBar::item:selected {
+    background: #F1F5F9;
+}
+QMenu {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    color: #111827;  /* texto oscuro en menús */
+}
+QMenu::item {
+    padding: 4px 20px;
+    color: #111827;
+}
+QMenu::item:selected {
+    background-color: #E2E8F0;
 }
 
-#section_title {
-    font-size: 20px;
-    font-weight: bold;
-    color: #1E293B;
-}
-
-#btn_new_invoice {
+/* Sidebar */
+QFrame#sidebar {
     background-color: #1E293B;
-    color: white;
-    padding: 10px 16px;
+    color: #F8FAFC;
+}
+QLabel#logoBox {
+    background-color: #3B82F6;
+    color: #FFFFFF;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 16px;
+    min-width: 32px;
+    min-height: 32px;
+    max-width: 32px;
+    max-height: 32px;
+    text-align: center;
+}
+QComboBox#companySelector {
+    background-color: #334155;
+    color: #F8FAFC;
+    border: 1px solid #475569;
+    border-radius: 4px;
+    padding: 4px;
+}
+QComboBox#companySelector::drop-down {
     border: none;
-    border-radius: 8px;
-    font-size: 13px;
-    font-weight: 600;
+}
+QComboBox#companySelector::down-arrow {
+    image: none;
+}
+QPushButton#navButton {
+    background-color: transparent;
+    color: #94A3B8;
+    text-align: left;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 4px;
+    font-weight: 500;
+}
+QPushButton#navButton:hover {
+    background-color: #0F172A;
+    color: #FFFFFF;
+}
+QPushButton#navButton:checked {
+    background-color: #3B82F6;
+    color: #FFFFFF;
+}
+QPushButton#configButton {
+    background-color: transparent;
+    color: #94A3B8;
+    padding: 6px 12px;
+    border: none;
+    text-align: left;
+    border-radius: 4px;
+}
+QPushButton#configButton:hover {
+    background-color: #0F172A;
+    color: #FFFFFF;
 }
 
-#btn_new_invoice:hover {
+/* Header */
+QFrame#header {
+    background-color: #FFFFFF;
+    border-bottom: 1px solid #E5E7EB;
+}
+QPushButton#primaryButton {
+    background-color: #1E293B;
+    color: #FFFFFF;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-weight: 500;
+}
+QPushButton#primaryButton:hover {
     background-color: #0F172A;
 }
 
-/* Filter dropdowns */
-#filter_combo {
-    background-color: white;
-    border: 1px solid #E5E7EB;
-    border-radius: 6px;
-    padding: 8px 12px;
-    font-size: 13px;
-}
-
-#filter_combo:hover {
-    border-color: #CBD5E1;
-}
-
-#filter_combo::drop-down {
-    border: none;
-    width: 20px;
-}
-
-#filter_combo QAbstractItemView {
-    background-color: white;
-    selection-background-color: #3B82F6;
-    selection-color: white;
-    border: 1px solid #E5E7EB;
-}
-
-/* ============================================
-   KPI CARD STYLES
-   ============================================ */
-.kpi_card {
-    background-color: white;
+/* Cards */
+QFrame.card {
+    background-color: #FFFFFF;
     border: 1px solid #E2E8F0;
     border-radius: 12px;
-    padding: 20px;
-}
-
-.kpi_label {
-    color: #6B7280;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-.kpi_value {
-    color: #1E293B;
-    font-size: 24px;
-    font-weight: bold;
-}
-
-.kpi_subtitle {
-    color: #9CA3AF;
-    font-size: 10px;
-}
-
-/* Income card */
-#card_income {
-    border-left: 4px solid #10B981;
-}
-
-/* Expense card */
-#card_expense {
-    border-left: 4px solid #EF4444;
-}
-
-/* Net ITBIS card */
-#card_net {
-    border-left: 4px solid #3B82F6;
-}
-
-/* Payable card */
-#card_payable {
-    border-left: 4px solid #F59E0B;
-}
-
-/* ============================================
-   TABLE STYLES
-   ============================================ */
-#transactions_table {
-    background-color: white;
-    border: 1px solid #E5E7EB;
-    border-radius: 12px;
-    gridline-color: #F3F4F6;
-    selection-background-color: #DBEAFE;
-    selection-color: #1E293B;
-}
-
-#transactions_table::item {
     padding: 12px;
-    border: none;
+}
+QLabel.card-title {
+    color: #64748B;
+    font-size: 12px;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+QLabel.card-value {
+    color: #0F172A;
+    font-size: 20px;
+    font-weight: 700;
+}
+QLabel.card-subtitle {
+    color: #94A3B8;
+    font-size: 11px;
 }
 
-#transactions_table::item:selected {
-    background-color: #DBEAFE;
+/* Transactions table */
+QTableWidget {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    gridline-color: #E2E8F0;
+    color: #111827;
+    selection-background-color: #E0F2FE;
+    selection-color: #111827;
 }
-
 QHeaderView::section {
-    background-color: #F9FAFB;
-    color: #6B7280;
-    padding: 12px;
+    background-color: #F1F5F9;
     border: none;
-    border-bottom: 1px solid #E5E7EB;
-    font-size: 11px;
+    padding: 6px;
+    color: #64748B;
     font-weight: 600;
-    text-transform: uppercase;
+    font-size: 12px;
+}
+QTableWidget::item {
+    padding: 6px;
+    color: #111827;
+}
+QTableWidget::item:selected {
+    background-color: #E0F2FE;
+    color: #111827;
 }
 
-/* Filter buttons above table */
-#filter_btn {
-    background-color: transparent;
-    color: #6B7280;
-    border: 1px solid transparent;
-    border-radius: 4px;
-    padding: 6px 12px;
-    font-size: 11px;
-    font-weight: 600;
-}
-
-#filter_btn:hover {
-    background-color: #F3F4F6;
-}
-
-#filter_btn_active {
-    background-color: white;
-    color: #3B82F6;
-    border: 1px solid #BFDBFE;
-    border-radius: 4px;
-    padding: 6px 12px;
-    font-size: 11px;
-    font-weight: 600;
-}
-
-/* ============================================
-   BADGE STYLES (for transaction type)
-   ============================================ */
-QLabel[class="badge_income"] {
-    background-color: #D1FAE5;
-    color: #065F46;
-    border-radius: 12px;
+/* Filter buttons */
+QPushButton#filterButton {
+    border: 1px solid #CBD5E1;
+    color: #475569;
+    background-color: #FFFFFF;
     padding: 4px 8px;
-    font-size: 10px;
-    font-weight: bold;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
 }
-
-QLabel[class="badge_expense"] {
-    background-color: #FEE2E2;
-    color: #991B1B;
-    border-radius: 12px;
-    padding: 4px 8px;
-    font-size: 10px;
-    font-weight: bold;
+QPushButton#filterButton[active="true"] {
+    background-color: #EFF6FF;
+    border-color: #BFDBFE;
+    color: #1D4ED8;
 }
-
-/* ============================================
-   SCROLLBAR STYLES
-   ============================================ */
-QScrollBar:vertical {
-    background: #F3F4F6;
-    width: 12px;
-    border-radius: 6px;
-}
-
-QScrollBar::handle:vertical {
-    background: #CBD5E1;
-    border-radius: 6px;
-    min-height: 20px;
-}
-
-QScrollBar::handle:vertical:hover {
-    background: #94A3B8;
-}
-
-QScrollBar:horizontal {
-    background: #F3F4F6;
-    height: 12px;
-    border-radius: 6px;
-}
-
-QScrollBar::handle:horizontal {
-    background: #CBD5E1;
-    border-radius: 6px;
-    min-width: 20px;
-}
-
-QScrollBar::handle:horizontal:hover {
-    background: #94A3B8;
-}
-
-QScrollBar::add-line, QScrollBar::sub-line {
-    border: none;
-    background: none;
+QPushButton#filterButton:hover {
+    background-color: #F1F5F9;
 }
 """
 
 
 class ModernMainWindow(QMainWindow):
-    """
-    Modern Dashboard Main Window for Facturas Pro.
-    Integrates with existing controller from app_gui_qt.py
-    """
-    
+    """Main application window implementing a modern dashboard UI."""
+
+    MONTHS_MAP = {
+        "Enero": "01",
+        "Febrero": "02",
+        "Marzo": "03",
+        "Abril": "04",
+        "Mayo": "05",
+        "Junio": "06",
+        "Julio": "07",
+        "Agosto": "08",
+        "Septiembre": "09",
+        "Octubre": "10",
+        "Noviembre": "11",
+        "Diciembre": "12",
+    }
+
     def __init__(self, controller):
         super().__init__()
         self.controller = controller
         self.setWindowTitle("Facturas Pro - Dashboard Moderno")
-        self.resize(1400, 900)
-        
-        # Data attributes
-        self.companies_list = []
-        self.all_current_transactions = []
-        self.current_tx_filter = "Todos"
-        self.months_map = {
-            'Enero': '01', 'Febrero': '02', 'Marzo': '03', 'Abril': '04',
-            'Mayo': '05', 'Junio': '06', 'Julio': '07', 'Agosto': '08',
-            'Septiembre': '09', 'Octubre': '10', 'Noviembre': '11', 'Diciembre': '12'
-        }
-        
+        self.resize(1280, 800)
+
+        # persistent state
+        self.current_month_name: str = ""
+        self.current_year: str = ""
+        self.transaction_filter_type: Optional[str] = None  # 'emitida' | 'gasto' | None
+        self.nav_buttons: List[QPushButton] = []
+        self.nav_buttons_by_key: dict[str, QPushButton] = {}
+        self.current_transactions: List[dict] = []  # cache para menú contextual
+
+        # UI elements we update later
+        self.income_value_label: QLabel
+        self.income_itbis_label: QLabel
+        self.expense_value_label: QLabel
+        self.expense_itbis_label: QLabel
+        self.net_itbis_label: QLabel
+        self.payable_label: QLabel
+        self.table: QTableWidget
+        self.company_selector: QComboBox
+        self.month_selector: QComboBox
+        self.year_selector: QComboBox
+        self.filter_buttons: List[QPushButton] = []
+
         # Build UI
-        self._create_menubar()
-        self._create_main_ui()
-        
-        # Load initial data
+        self._build_ui()
+
+        # Populate companies and set default filters
         self._populate_company_selector()
-        self._refresh_dashboard()
-    
-    def _create_menubar(self):
-        """Create menu bar with Herramientas menu"""
-        menubar = self.menuBar()
-        
-        # Herramientas menu
-        tools_menu = menubar.addMenu("Herramientas")
-        
-        # Firebase configuration
-        config_action = QAction("Configurar Firebase...", self)
-        config_action.triggered.connect(self._open_firebase_config)
-        tools_menu.addAction(config_action)
-        
-        # SQLite to Firebase migration
-        migrate_action = QAction("Migrar SQLite → Firebase...", self)
-        migrate_action.triggered.connect(self._open_migration_dialog)
-        tools_menu.addAction(migrate_action)
-        
-        tools_menu.addSeparator()
-        
-        # Manual SQL backup
-        backup_action = QAction("Crear backup SQL manual", self)
-        backup_action.triggered.connect(self._create_manual_backup)
-        tools_menu.addAction(backup_action)
-        
-        # Archivo menu
+        self._set_default_filters()
+
+        self.refresh_dashboard()
+
+    # ------------------------------------------------------------------
+    # UI Construction
+    # ------------------------------------------------------------------
+    def _build_ui(self) -> None:
+        """Construct all widgets and layouts for the window."""
+        # Apply stylesheet
+        self.setStyleSheet(STYLESHEET)
+
+        # ------------------------------------------------------------------
+        # Menubar
+        # ------------------------------------------------------------------
+        menubar = QMenuBar(self)
+        self.setMenuBar(menubar)
+
+        # --- Menú Archivo (clásico)
         file_menu = menubar.addMenu("Archivo")
-        exit_action = QAction("Salir", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-    
-    def _create_main_ui(self):
-        """Create the main UI layout"""
-        # Central widget
-        central = QWidget()
+        file_menu.addAction("Cambiar Base de Datos...", self._change_database)
+        file_menu.addAction("Crear Copia de Seguridad...", self._backup_database)
+        file_menu.addAction("Restaurar Copia de Seguridad...", self._restore_database)
+        file_menu.addSeparator()
+        file_menu.addAction("Salir", self.close)
+
+        # --- Menú Reportes (clásico)
+        report_menu = menubar.addMenu("Reportes")
+        report_menu.addAction("Reporte Mensual...", self._open_report_window)
+        report_menu.addAction(
+            "Reporte por Cliente/Proveedor...", self._open_third_party_report_window
+        )
+
+        # --- Menú Opciones (clásico)
+        options_menu = menubar.addMenu("Opciones")
+        options_menu.addAction("Configuración...", self._open_settings_window)
+        options_menu.addSeparator()
+        theme_menu = options_menu.addMenu("Cambiar Tema")
+        for theme in ["Fusion", "Windows", "WindowsVista"]:
+            theme_menu.addAction(
+                theme, lambda checked=False, t=theme: self._change_theme(t)
+            )
+
+        # --- Menú Herramientas (Modern UI)
+        tools_menu = menubar.addMenu("Herramientas")
+
+        action_config_firebase = QAction("Configurar Firebase…", self)
+        action_config_firebase.triggered.connect(self.open_firebase_config)
+        tools_menu.addAction(action_config_firebase)
+
+        action_migrate = QAction("Migrar SQLite → Firebase…", self)
+        action_migrate.triggered.connect(self.open_migration_dialog)
+        tools_menu.addAction(action_migrate)
+
+        action_backup = QAction("Crear backup SQL manual", self)
+        action_backup.triggered.connect(self.create_manual_backup)
+        tools_menu.addAction(action_backup)
+
+        # ------------------------------------------------------------------
+        # Layout principal
+        # ------------------------------------------------------------------
+        central = QWidget(self)
         self.setCentralWidget(central)
-        
-        # Main horizontal layout: Sidebar | Content
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        
-        # Create sidebar and content area
-        sidebar = self._create_sidebar()
-        content = self._create_content_area()
-        
-        main_layout.addWidget(sidebar)
-        main_layout.addWidget(content, 1)  # Content takes remaining space
-    
-    def _create_sidebar(self):
-        """Create the dark sidebar with navigation"""
+
+        # Sidebar
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(250)
-        
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # Header with logo
-        header = QWidget()
-        header.setObjectName("sidebar_header")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 16, 16, 16)
-        
-        # Logo box
-        logo = QLabel("F")
-        logo.setObjectName("logo_box")
-        logo.setFixedSize(36, 36)
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_layout.addWidget(logo)
-        
-        # App title
-        title = QLabel("Facturas Pro")
-        title.setObjectName("app_title")
-        header_layout.addWidget(title)
-        header_layout.addStretch()
-        
-        layout.addWidget(header)
-        
-        # Company selector section
-        company_widget = QWidget()
-        company_layout = QVBoxLayout(company_widget)
-        company_layout.setContentsMargins(16, 16, 16, 16)
-        company_layout.setSpacing(8)
-        
-        company_label = QLabel("EMPRESA ACTIVA")
-        company_label.setObjectName("company_label")
-        company_layout.addWidget(company_label)
-        
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(16, 16, 16, 16)
+        sidebar_layout.setSpacing(12)
+
+        # Header with logo and title
+        header_row = QHBoxLayout()
+        logo_label = QLabel("F")
+        logo_label.setObjectName("logoBox")
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label = QLabel("Facturas Pro")
+        title_label.setStyleSheet("color: white; font-size: 16px; font-weight: 600;")
+        header_row.addWidget(logo_label)
+        header_row.addSpacing(8)
+        header_row.addWidget(title_label)
+        header_row.addStretch()
+        sidebar_layout.addLayout(header_row)
+
+        # Company selector
+        comp_label = QLabel("EMPRESA ACTIVA")
+        comp_label.setStyleSheet(
+            "color: #94A3B8; font-size: 10px; font-weight: 700; letter-spacing: 1px;"
+        )
+        sidebar_layout.addWidget(comp_label)
         self.company_selector = QComboBox()
-        self.company_selector.setObjectName("company_selector")
-        self.company_selector.currentIndexChanged.connect(self._on_company_changed)
-        company_layout.addWidget(self.company_selector)
-        
-        layout.addWidget(company_widget)
-        
-        # Navigation menu
-        nav_widget = QWidget()
-        nav_layout = QVBoxLayout(nav_widget)
-        nav_layout.setContentsMargins(12, 0, 12, 0)
-        nav_layout.setSpacing(4)
-        
+        self.company_selector.setObjectName("companySelector")
+        self.company_selector.currentIndexChanged.connect(self.on_company_changed)
+        sidebar_layout.addWidget(self.company_selector)
+
         # Navigation buttons
-        self.nav_buttons = {}
-        
-        nav_items = [
-            ("dashboard", "Dashboard", "fa5s.chart-pie", self._show_dashboard),
-            ("income", "Ingresos", "fa5s.file-invoice-dollar", self._filter_income),
-            ("expense", "Gastos", "fa5s.shopping-cart", self._filter_expense),
-            ("tax", "Calc. Impuestos", "fa5s.calculator", self._open_tax_calculation_manager),
-            ("reports", "Reportes", "fa5s.chart-line", self._open_report_window),
-        ]
-        
-        for key, text, icon_name, callback in nav_items:
-            btn = self._create_nav_button(text, icon_name, callback, active=(key == "dashboard"))
-            self.nav_buttons[key] = btn
-            nav_layout.addWidget(btn)
-        
-        layout.addWidget(nav_widget)
-        layout.addStretch()
-        
-        # Config button at bottom
-        config_widget = QWidget()
-        config_widget.setStyleSheet("border-top: 1px solid #334155;")
-        config_layout = QVBoxLayout(config_widget)
-        config_layout.setContentsMargins(12, 12, 12, 12)
-        
-        config_btn = self._create_nav_button("Configuración", "fa5s.cog", self._open_firebase_config, is_config=True)
-        config_layout.addWidget(config_btn)
-        
-        layout.addWidget(config_widget)
-        
-        return sidebar
-    
-    def _create_nav_button(self, text, icon_name, callback, active=False, is_config=False):
-        """Create a navigation button with optional icon"""
-        btn = QPushButton()
-        
-        if is_config:
-            btn.setObjectName("config_button")
-        elif active:
-            btn.setObjectName("nav_button_active")
-        else:
-            btn.setObjectName("nav_button")
-        
-        # Try to add icon
-        if QTAWESOME_AVAILABLE:
+        self._add_nav_button(sidebar_layout, "fa5s.chart-pie", "Dashboard", "dashboard")
+        self._add_nav_button(
+            sidebar_layout, "fa5s.file-invoice-dollar", "Ingresos", "ingresos"
+        )
+        self._add_nav_button(
+            sidebar_layout, "fa5s.shopping-cart", "Gastos", "gastos"
+        )
+        self._add_nav_button(
+            sidebar_layout, "fa5s.calculator", "Calc. Impuestos", "tax"
+        )
+        self._add_nav_button(
+            sidebar_layout, "fa5s.percent", "Resumen ITBIS", "itbis_summary"
+        )
+        self._add_nav_button(
+            sidebar_layout, "fa5s.chart-line", "Reportes", "reportes"
+        )
+
+        sidebar_layout.addStretch()
+
+        # Configuration button at bottom
+        config_btn = QPushButton()
+        config_btn.setObjectName("configButton")
+        config_btn.setText("Configuración")
+        config_btn.setCheckable(False)
+        if qta:
             try:
-                icon = qta.icon(icon_name, color='white' if active else '#94A3B8')
-                btn.setIcon(icon)
-                btn.setText(f"  {text}")
-            except Exception:
-                btn.setText(f"  {text}")
-        else:
-            btn.setText(f"  {text}")
-        
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.clicked.connect(callback)
-        
-        return btn
-    
-    def _create_content_area(self):
-        """Create the main content area"""
-        content = QWidget()
-        content.setObjectName("content_area")
-        
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # Header
-        header = self._create_header()
-        layout.addWidget(header)
-        
-        # Scrollable content
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(24, 24, 24, 24)
-        scroll_layout.setSpacing(20)
-        
-        # Filters
-        filters = self._create_filters()
-        scroll_layout.addWidget(filters)
-        
-        # KPI Cards
-        kpi_grid = self._create_kpi_cards()
-        scroll_layout.addLayout(kpi_grid)
-        
-        # Transactions table
-        table_widget = self._create_transactions_table()
-        scroll_layout.addWidget(table_widget, 1)
-        
-        layout.addWidget(scroll_content, 1)
-        
-        return content
-    
-    def _create_header(self):
-        """Create the header bar"""
-        header = QWidget()
-        header.setObjectName("header")
-        
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(24, 0, 24, 0)
-        
-        # Section title
-        self.section_title = QLabel("Resumen Financiero")
-        self.section_title.setObjectName("section_title")
-        header_layout.addWidget(self.section_title)
-        
-        header_layout.addStretch()
-        
-        # New invoice button
-        btn_new = QPushButton("Nueva Factura")
-        btn_new.setObjectName("btn_new_invoice")
-        if QTAWESOME_AVAILABLE:
-            try:
-                icon = qta.icon('fa5s.plus', color='white')
-                btn_new.setIcon(icon)
-                btn_new.setText("  Nueva Factura")
+                config_btn.setIcon(qta.icon("fa5s.cog", color="#94A3B8"))
             except Exception:
                 pass
-        btn_new.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_new.clicked.connect(self._open_add_invoice_window)
-        header_layout.addWidget(btn_new)
-        
-        return header
-    
-    def _create_filters(self):
-        """Create month/year filter dropdowns"""
-        filters = QWidget()
-        filters_layout = QHBoxLayout(filters)
-        filters_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Month selector
-        self.month_combo = QComboBox()
-        self.month_combo.setObjectName("filter_combo")
-        self.month_combo.addItems(list(self.months_map.keys()))
-        # Set current month
-        current_month = QDate.currentDate().month() - 1
-        if 0 <= current_month < 12:
-            self.month_combo.setCurrentIndex(current_month)
-        self.month_combo.currentIndexChanged.connect(self._on_filter_changed)
-        filters_layout.addWidget(self.month_combo)
-        
-        # Year selector
-        self.year_combo = QComboBox()
-        self.year_combo.setObjectName("filter_combo")
-        current_year = QDate.currentDate().year()
-        for year in range(current_year - 5, current_year + 2):
-            self.year_combo.addItem(str(year))
-        self.year_combo.setCurrentText(str(current_year))
-        self.year_combo.currentIndexChanged.connect(self._on_filter_changed)
-        filters_layout.addWidget(self.year_combo)
-        
-        filters_layout.addStretch()
-        
-        return filters
-    
-    def _create_kpi_cards(self):
-        """Create the KPI cards grid"""
-        grid = QGridLayout()
-        grid.setSpacing(20)
-        
-        # Create cards
-        self.card_income = self._create_kpi_card("Total Ingresos", "RD$ 0.00", "ITBIS: RD$ 0.00", "card_income")
-        self.card_expense = self._create_kpi_card("Total Gastos", "RD$ 0.00", "ITBIS: RD$ 0.00", "card_expense")
-        self.card_net = self._create_kpi_card("ITBIS Neto", "RD$ 0.00", "Diferencia (Ingreso - Gasto)", "card_net")
-        self.card_payable = self._create_kpi_card("A Pagar (Estimado)", "RD$ 0.00", "", "card_payable")
-        
-        # Add to grid
-        grid.addWidget(self.card_income, 0, 0)
-        grid.addWidget(self.card_expense, 0, 1)
-        grid.addWidget(self.card_net, 0, 2)
-        grid.addWidget(self.card_payable, 0, 3)
-        
-        return grid
-    
-    def _create_kpi_card(self, label_text, value_text, subtitle_text, card_id):
-        """Create a single KPI card"""
-        card = QFrame()
-        card.setObjectName(card_id)
-        card.setProperty("class", "kpi_card")
-        
-        layout = QVBoxLayout(card)
-        layout.setSpacing(8)
-        
-        # Label
-        label = QLabel(label_text)
-        label.setProperty("class", "kpi_label")
-        layout.addWidget(label)
-        
-        # Value
-        value = QLabel(value_text)
-        value.setProperty("class", "kpi_value")
-        value.setObjectName(f"{card_id}_value")
-        layout.addWidget(value)
-        
-        # Subtitle
-        if subtitle_text:
-            subtitle = QLabel(subtitle_text)
-            subtitle.setProperty("class", "kpi_subtitle")
-            subtitle.setObjectName(f"{card_id}_subtitle")
-            layout.addWidget(subtitle)
-        
-        layout.addStretch()
-        
-        return card
-    
-    def _create_transactions_table(self):
-        """Create the transactions table with filter buttons"""
-        container = QFrame()
-        container.setObjectName("transactions_table")
-        
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # Table header with filter buttons
-        table_header = QWidget()
-        table_header.setStyleSheet("background-color: #F9FAFB; border-bottom: 1px solid #E5E7EB;")
-        header_layout = QHBoxLayout(table_header)
-        header_layout.setContentsMargins(20, 12, 20, 12)
-        
-        header_title = QLabel("Transacciones Recientes")
-        header_title.setStyleSheet("font-weight: 600; color: #374151; font-size: 14px;")
-        header_layout.addWidget(header_title)
-        
+        config_btn.clicked.connect(self.open_firebase_config)
+        sidebar_layout.addWidget(config_btn)
+
+        main_layout.addWidget(sidebar)
+
+        # Content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(24, 24, 24, 24)
+        content_layout.setSpacing(16)
+
+        # Header area inside content
+        header = QFrame()
+        header.setObjectName("header")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+        self.section_title = QLabel("Resumen Financiero")
+        self.section_title.setStyleSheet(
+            "font-size: 20px; font-weight: 700; color: #1E293B;"
+        )
+        header_layout.addWidget(self.section_title)
         header_layout.addStretch()
-        
-        # Filter buttons
-        self.filter_buttons = {}
-        for filter_name in ["Todos", "Ingresos", "Gastos"]:
-            btn = QPushButton(filter_name)
-            if filter_name == "Todos":
-                btn.setObjectName("filter_btn_active")
-            else:
-                btn.setObjectName("filter_btn")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda checked, f=filter_name: self._set_transaction_filter(f))
-            self.filter_buttons[filter_name] = btn
-            header_layout.addWidget(btn)
-        
-        layout.addWidget(table_header)
-        
-        # Table
-        self.table = QTableWidget()
-        self.table.setObjectName("transactions_table")
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels([
-            "Fecha", "Tipo", "No. Factura", "Empresa / Tercero", "ITBIS", "Monto Total", "Acciones"
-        ])
-        
-        # Table settings
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
+
+        # Button for new invoice (Ingreso / Gasto)
+        new_invoice_btn = QPushButton()
+        new_invoice_btn.setObjectName("primaryButton")
+        new_invoice_btn.setText("+ Nueva Factura")
+        new_invoice_btn.setCheckable(False)
+        if qta:
+            try:
+                new_invoice_btn.setIcon(qta.icon("fa5s.plus", color="#FFFFFF"))
+            except Exception:
+                pass
+
+        new_invoice_menu = QMenu(new_invoice_btn)
+        action_income = new_invoice_menu.addAction("Factura Emitida (Ingreso)")
+        action_expense = new_invoice_menu.addAction("Factura de Gasto")
+        action_income.triggered.connect(self.open_add_income_invoice)
+        action_expense.triggered.connect(self.open_add_expense_invoice)
+        new_invoice_btn.setMenu(new_invoice_menu)
+
+        header_layout.addWidget(new_invoice_btn)
+        content_layout.addWidget(header)
+
+        # Filters row (month and year)
+        filters_row = QHBoxLayout()
+        filters_row.setSpacing(12)
+        self.month_selector = QComboBox()
+        for month in self.MONTHS_MAP.keys():
+            self.month_selector.addItem(month)
+        filters_row.addWidget(self.month_selector)
+        self.month_selector.currentIndexChanged.connect(self.on_filter_changed)
+
+        self.year_selector = QComboBox()
+        filters_row.addWidget(self.year_selector)
+        self.year_selector.currentIndexChanged.connect(self.on_filter_changed)
+
+        filters_row.addStretch()
+        content_layout.addLayout(filters_row)
+
+        # KPI Cards grid
+        cards_widget = QWidget()
+        cards_layout = QGridLayout(cards_widget)
+        cards_layout.setContentsMargins(0, 0, 0, 0)
+        cards_layout.setSpacing(16)
+
+        def create_card(title: str) -> tuple[QFrame, QLabel, QLabel]:
+            frame = QFrame()
+            frame.setProperty("class", "card")
+            frame.setFrameShape(QFrame.Shape.NoFrame)
+            layout = QVBoxLayout(frame)
+            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setSpacing(4)
+            title_lbl = QLabel(title)
+            title_lbl.setProperty("class", "card-title")
+            layout.addWidget(title_lbl)
+            value_lbl = QLabel("RD$ 0.00")
+            value_lbl.setProperty("class", "card-value")
+            layout.addWidget(value_lbl)
+            subtitle_lbl = QLabel("")
+            subtitle_lbl.setProperty("class", "card-subtitle")
+            layout.addWidget(subtitle_lbl)
+            layout.addStretch()
+            return frame, value_lbl, subtitle_lbl
+
+        income_card, self.income_value_label, self.income_itbis_label = create_card(
+            "Total Ingresos"
+        )
+        expense_card, self.expense_value_label, self.expense_itbis_label = create_card(
+            "Total Gastos"
+        )
+        net_card, self.net_itbis_label, _ = create_card("ITBIS Neto")
+        payable_card, self.payable_label, _ = create_card("A Pagar (Estimado)")
+
+        income_card.setStyleSheet("QFrame { border-left: 4px solid #10B981; }")
+        expense_card.setStyleSheet("QFrame { border-left: 4px solid #EF4444; }")
+        net_card.setStyleSheet("QFrame { border-left: 4px solid #2563EB; }")
+        payable_card.setStyleSheet("QFrame { border-left: 4px solid #F59E0B; }")
+
+        cards_layout.addWidget(income_card, 0, 0)
+        cards_layout.addWidget(expense_card, 0, 1)
+        cards_layout.addWidget(net_card, 0, 2)
+        cards_layout.addWidget(payable_card, 0, 3)
+        content_layout.addWidget(cards_widget)
+
+        # Transactions header
+        tx_header_widget = QWidget()
+        tx_header_layout = QHBoxLayout(tx_header_widget)
+        tx_header_layout.setContentsMargins(0, 0, 0, 0)
+        tx_header_layout.setSpacing(8)
+        tx_title = QLabel("Transacciones Recientes")
+        tx_title.setStyleSheet(
+            "font-weight: 600; font-size: 16px; color: #334155;"
+        )
+        tx_header_layout.addWidget(tx_title)
+        tx_header_layout.addStretch()
+        for name, tx_type in [
+            ("Todos", None),
+            ("Ingresos", "emitida"),
+            ("Gastos", "gasto"),
+        ]:
+            btn = QPushButton(name)
+            btn.setObjectName("filterButton")
+            btn.setCheckable(True)
+            btn.setProperty("active", "false")
+            btn.clicked.connect(
+                lambda checked, t=tx_type, b=btn: self.on_filter_button_clicked(t, b)
+            )
+            self.filter_buttons.append(btn)
+            tx_header_layout.addWidget(btn)
+        content_layout.addWidget(tx_header_widget)
+
+        # Transactions table
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Fecha", "Tipo", "No. Factura", "Empresa / Tercero", "ITBIS", "Total"]
+        )
         self.table.setAlternatingRowColors(False)
-        
-        # Column widths
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # Fecha
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Tipo
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # No. Factura
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)  # Tercero
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # ITBIS
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Total
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)  # Acciones
-        self.table.setColumnWidth(6, 80)
-        
-        # Double-click for diagnose
-        self.table.doubleClicked.connect(self._on_table_double_click)
-        
-        layout.addWidget(self.table)
-        
-        return container
-    
-    # ============================================
-    # DATA INTEGRATION METHODS
-    # ============================================
-    
-    def _populate_company_selector(self):
-        """Load companies into selector (from controller)"""
-        try:
-            if hasattr(self.controller, 'get_all_companies'):
-                companies = self.controller.get_all_companies()
-            elif hasattr(self.controller, 'get_companies'):
-                companies = self.controller.get_companies()
-            else:
-                companies = []
-            
-            self.companies_list = companies
-            self.company_selector.clear()
-            
-            for company in companies:
-                self.company_selector.addItem(company.get('name', 'Unknown'))
-        except Exception as e:
-            print(f"Error loading companies: {e}")
-            QMessageBox.warning(self, "Error", f"No se pudieron cargar las empresas:\n{e}")
-    
-    def _get_current_company_id(self):
-        """Get the currently selected company ID"""
-        idx = self.company_selector.currentIndex()
-        if idx < 0 or not self.companies_list:
-            return None
-        return self.companies_list[idx].get('id')
-    
-    def _refresh_dashboard(self, filter_month=None, filter_year=None):
-        """Refresh dashboard data (KPIs and transactions)"""
-        company_id = self._get_current_company_id()
-        if not company_id:
-            self._clear_dashboard()
-            return
-        
-        try:
-            # Use current filter values if not specified
-            if filter_month is None:
-                month_name = self.month_combo.currentText()
-                filter_month = self.months_map.get(month_name, '01')
-            
-            if filter_year is None:
-                filter_year = int(self.year_combo.currentText())
-            
-            # Call controller method
-            if hasattr(self.controller, 'get_dashboard_data'):
-                dashboard_data = self.controller.get_dashboard_data(
-                    company_id,
-                    filter_month=filter_month,
-                    filter_year=filter_year
-                )
-            else:
-                print("Warning: Controller doesn't have get_dashboard_data method")
-                dashboard_data = None
-            
-            if dashboard_data and dashboard_data.get('summary'):
-                summary = dashboard_data['summary']
-                
-                # Update KPI cards
-                self._update_kpi_card('card_income', 
-                                     summary.get('total_ingresos', 0.0),
-                                     summary.get('itbis_ingresos', 0.0))
-                
-                self._update_kpi_card('card_expense',
-                                     summary.get('total_gastos', 0.0),
-                                     summary.get('itbis_gastos', 0.0))
-                
-                net_itbis = summary.get('itbis_neto', 0.0)
-                self._update_kpi_simple('card_net', net_itbis)
-                
-                # A Pagar is same as net ITBIS for now
-                self._update_kpi_simple('card_payable', net_itbis)
-                
-                # Store transactions and populate table
-                self.all_current_transactions = dashboard_data.get('all_transactions', [])
-                self._apply_transaction_filter()
-            else:
-                self._clear_dashboard()
-                
-        except Exception as e:
-            print(f"Error refreshing dashboard: {e}")
-            QMessageBox.warning(self, "Error", f"Error al actualizar el dashboard:\n{e}")
-            self._clear_dashboard()
-    
-    def _update_kpi_card(self, card_id, total_value, itbis_value):
-        """Update a KPI card with total and ITBIS values"""
-        # Find value label
-        value_label = self.findChild(QLabel, f"{card_id}_value")
-        subtitle_label = self.findChild(QLabel, f"{card_id}_subtitle")
-        
-        if value_label:
-            value_label.setText(f"RD$ {total_value:,.2f}")
-        
-        if subtitle_label:
-            subtitle_label.setText(f"ITBIS: RD$ {itbis_value:,.2f}")
-    
-    def _update_kpi_simple(self, card_id, value):
-        """Update a simple KPI card with just a value"""
-        value_label = self.findChild(QLabel, f"{card_id}_value")
-        if value_label:
-            value_label.setText(f"RD$ {value:,.2f}")
-    
-    def _clear_dashboard(self):
-        """Clear all dashboard data"""
-        self._update_kpi_card('card_income', 0.0, 0.0)
-        self._update_kpi_card('card_expense', 0.0, 0.0)
-        self._update_kpi_simple('card_net', 0.0)
-        self._update_kpi_simple('card_payable', 0.0)
-        self.all_current_transactions = []
-        self.table.setRowCount(0)
-    
-    def _populate_transactions_table(self, transactions):
-        """Populate the table with transaction data"""
-        self.table.setRowCount(0)
-        self.table.setRowCount(len(transactions))
-        
-        for row, trans in enumerate(transactions):
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        header_view = self.table.horizontalHeader()
+        header_view.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header_view.setSectionsMovable(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.cellDoubleClicked.connect(self.on_table_double_click)
+
+        # Menú contextual en la tabla
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._open_context_menu)
+
+        content_layout.addWidget(self.table)
+
+        main_layout.addWidget(content)
+
+    # ------------------------------------------------------------------
+    # Helper to add navigation buttons to sidebar
+    # ------------------------------------------------------------------
+    def _add_nav_button(
+        self, layout: QVBoxLayout, icon_name: str, text: str, section: str
+    ) -> None:
+        btn = QPushButton()
+        btn.setObjectName("navButton")
+        btn.setCheckable(True)
+        btn.setAutoExclusive(True)
+        btn.setText(text)
+        if qta:
             try:
-                # Date
-                date_item = QTableWidgetItem(str(trans.get('invoice_date', '')))
-                date_item.setForeground(QColor("#6B7280"))
-                self.table.setItem(row, 0, date_item)
-                
-                # Type (with badge styling)
-                invoice_type = trans.get('invoice_type', '')
-                if invoice_type == 'emitida':
-                    type_text = "INGRESO"
-                    type_color = QColor("#065F46")
-                    type_bg = QColor("#D1FAE5")
-                elif invoice_type == 'gasto':
-                    type_text = "GASTO"
-                    type_color = QColor("#991B1B")
-                    type_bg = QColor("#FEE2E2")
-                else:
-                    type_text = "N/A"
-                    type_color = QColor("#6B7280")
-                    type_bg = QColor("#F3F4F6")
-                
-                type_item = QTableWidgetItem(type_text)
-                type_item.setForeground(type_color)
-                type_item.setBackground(type_bg)
-                type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table.setItem(row, 1, type_item)
-                
-                # Invoice number
-                number_item = QTableWidgetItem(str(trans.get('invoice_number', '')))
-                number_item.setForeground(QColor("#1E293B"))
-                number_item.setData(Qt.ItemDataRole.UserRole, trans.get('id'))  # Store ID for diagnose
-                self.table.setItem(row, 2, number_item)
-                
-                # Third party
-                party_item = QTableWidgetItem(str(trans.get('third_party_name', '')))
-                party_item.setForeground(QColor("#6B7280"))
-                self.table.setItem(row, 3, party_item)
-                
-                # ITBIS (converted to RD$)
-                itbis = float(trans.get('itbis', 0.0))
-                exchange_rate = float(trans.get('exchange_rate', 1.0))
-                itbis_rd = itbis * exchange_rate
-                itbis_item = QTableWidgetItem(f"RD$ {itbis_rd:,.2f}")
-                itbis_item.setForeground(QColor("#6B7280"))
-                itbis_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.table.setItem(row, 4, itbis_item)
-                
-                # Total (in RD$)
-                total_rd = float(trans.get('total_amount_rd', 0.0))
-                if not total_rd:
-                    total_amount = float(trans.get('total_amount', 0.0))
-                    total_rd = total_amount * exchange_rate
-                
-                total_item = QTableWidgetItem(f"RD$ {total_rd:,.2f}")
-                total_item.setForeground(QColor("#1E293B"))
-                total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                font = total_item.font()
-                font.setBold(True)
-                total_item.setFont(font)
-                self.table.setItem(row, 5, total_item)
-                
-                # Actions (placeholder)
-                actions_item = QTableWidgetItem("⋮")
-                actions_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                actions_item.setForeground(QColor("#D1D5DB"))
-                self.table.setItem(row, 6, actions_item)
-                
-            except Exception as e:
-                print(f"Error populating row {row}: {e}")
-    
-    def _apply_transaction_filter(self):
-        """Apply the current transaction filter (Todos/Ingresos/Gastos)"""
-        if self.current_tx_filter == "Ingresos":
-            filtered = [t for t in self.all_current_transactions if t.get('invoice_type') == 'emitida']
-        elif self.current_tx_filter == "Gastos":
-            filtered = [t for t in self.all_current_transactions if t.get('invoice_type') == 'gasto']
+                btn.setIcon(qta.icon(icon_name, color="#94A3B8"))
+            except Exception:
+                pass
+        btn.clicked.connect(lambda checked, s=section: self.on_nav_clicked(s))
+        layout.addWidget(btn)
+        self.nav_buttons.append(btn)
+        self.nav_buttons_by_key[section] = btn
+
+    # ------------------------------------------------------------------
+    # Company selector population
+    # ------------------------------------------------------------------
+    def _populate_company_selector(self) -> None:
+        self.company_selector.clear()
+        try:
+            if hasattr(self.controller, "list_companies"):
+                companies = self.controller.list_companies() or []
+                for name in companies:
+                    self.company_selector.addItem(str(name))
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Empresas", f"No se pudieron cargar las empresas: {exc}"
+            )
+
+    def _set_default_filters(self) -> None:
+        current_month_index = QDate.currentDate().month() - 1
+        if 0 <= current_month_index < len(self.MONTHS_MAP):
+            self.month_selector.setCurrentIndex(current_month_index)
         else:
-            filtered = self.all_current_transactions
-        
-        self._populate_transactions_table(filtered)
-    
-    # ============================================
-    # EVENT HANDLERS
-    # ============================================
-    
-    def _on_company_changed(self, index):
-        """Handle company selector change"""
+            self.month_selector.setCurrentIndex(0)
+        self.current_month_name = self.month_selector.currentText()
+
+        self.year_selector.clear()
         try:
-            company_id = self._get_current_company_id()
-            if company_id and hasattr(self.controller, 'set_active_company'):
-                company_name = self.companies_list[index].get('name', '')
+            if hasattr(self.controller, "get_unique_invoice_years") and hasattr(
+                self.controller, "set_active_company"
+            ):
+                company_name = self.company_selector.currentText()
                 self.controller.set_active_company(company_name)
-        except Exception as e:
-            print(f"Error changing company: {e}")
-        
-        self._refresh_dashboard()
-    
-    def _on_filter_changed(self, index):
-        """Handle month/year filter change"""
-        self._refresh_dashboard()
-    
-    def _set_transaction_filter(self, filter_name):
-        """Set transaction type filter and update table"""
-        self.current_tx_filter = filter_name
-        
-        # Update button styles
-        for name, btn in self.filter_buttons.items():
-            if name == filter_name:
-                btn.setObjectName("filter_btn_active")
-            else:
-                btn.setObjectName("filter_btn")
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
-        
-        # Apply filter
-        self._apply_transaction_filter()
-    
-    def _on_table_double_click(self, index):
-        """Handle double-click on table row for diagnosis"""
-        if not index.isValid():
-            return
-        
-        row = index.row()
-        number_item = self.table.item(row, 2)
-        if number_item:
-            invoice_number = number_item.text()
+                years = self.controller.get_unique_invoice_years(None) or []
+                years = sorted(
+                    {int(y) for y in years if y not in (None, "")}, reverse=True
+                )
+                for y in years:
+                    self.year_selector.addItem(str(y))
+            if self.year_selector.count() == 0:
+                self.year_selector.addItem(str(QDate.currentDate().year()))
+        except Exception:
+            self.year_selector.addItem(str(QDate.currentDate().year()))
+        self.year_selector.setCurrentIndex(0)
+        self.current_year = self.year_selector.currentText()
+
+    # ------------------------------------------------------------------
+    # Navigation handler
+    # ------------------------------------------------------------------
+    def on_nav_clicked(self, key: str) -> None:
+        """
+        Maneja los clics en los botones del sidebar de navegación.
+        """
+        if key == "dashboard":
+            self.transaction_filter_type = None
             try:
-                if hasattr(self.controller, 'diagnose_row'):
-                    self.controller.diagnose_row(number=invoice_number)
-                else:
-                    print(f"Diagnose row: {invoice_number}")
-            except Exception as e:
-                print(f"Error diagnosing row: {e}")
-    
-    # ============================================
-    # NAVIGATION ACTIONS
-    # ============================================
-    
-    def _show_dashboard(self):
-        """Show dashboard view (default)"""
-        self.section_title.setText("Resumen Financiero")
-        self.current_tx_filter = "Todos"
-        self._set_nav_active("dashboard")
-        self._refresh_dashboard()
-    
-    def _filter_income(self):
-        """Filter to show only income"""
-        self.section_title.setText("Ingresos")
-        self._set_nav_active("income")
-        self._set_transaction_filter("Ingresos")
-    
-    def _filter_expense(self):
-        """Filter to show only expenses"""
-        self.section_title.setText("Gastos")
-        self._set_nav_active("expense")
-        self._set_transaction_filter("Gastos")
-    
-    def _set_nav_active(self, active_key):
-        """Set the active navigation button"""
-        for key, btn in self.nav_buttons.items():
-            if key == active_key:
-                btn.setObjectName("nav_button_active")
+                if hasattr(self.controller, "set_transaction_filter"):
+                    self.controller.set_transaction_filter(None)
+            except Exception:
+                pass
+            if hasattr(self, "show_dashboard_view"):
+                self.show_dashboard_view()
             else:
-                btn.setObjectName("nav_button")
+                self.refresh_dashboard()
+
+        elif key == "ingresos":
+            self.transaction_filter_type = "emitida"
+            try:
+                if hasattr(self.controller, "set_transaction_filter"):
+                    self.controller.set_transaction_filter("emitida")
+            except Exception:
+                pass
+            if hasattr(self, "show_ingresos_view"):
+                self.show_ingresos_view()
+            else:
+                self.refresh_dashboard()
+
+        elif key == "gastos":
+            self.transaction_filter_type = "gasto"
+            try:
+                if hasattr(self.controller, "set_transaction_filter"):
+                    self.controller.set_transaction_filter("gasto")
+            except Exception:
+                pass
+            if hasattr(self, "show_gastos_view"):
+                self.show_gastos_view()
+            else:
+                self.refresh_dashboard()
+
+        elif key == "tax":
+            if hasattr(self, "open_tax_calculation_manager"):
+                self.open_tax_calculation_manager()
+
+        elif key == "itbis_summary":
+            self.open_itbis_summary_window()
+
+        elif key == "reportes":
+            # Abrir menú de opciones de reporte
+            self.open_reports_menu()
+
+    # ------------------------------------------------------------------
+    # Company change handler
+    # ------------------------------------------------------------------
+    def on_company_changed(self) -> None:
+        company_name = self.company_selector.currentText()
+        try:
+            if hasattr(self.controller, "set_active_company"):
+                self.controller.set_active_company(company_name)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Empresa", f"No se pudo asignar la empresa activa: {exc}"
+            )
+        try:
+            if hasattr(self.controller, "get_unique_invoice_years"):
+                years = self.controller.get_unique_invoice_years(None) or []
+                years = sorted(
+                    {int(y) for y in years if y not in (None, "")}, reverse=True
+                )
+                self.year_selector.clear()
+                for y in years:
+                    self.year_selector.addItem(str(y))
+                if not years:
+                    self.year_selector.addItem(str(QDate.currentDate().year()))
+                self.year_selector.setCurrentIndex(0)
+        except Exception:
+            pass
+        self.refresh_dashboard()
+
+    # ------------------------------------------------------------------
+    # Filter handlers
+    # ------------------------------------------------------------------
+    def on_filter_changed(self) -> None:
+        self.current_month_name = self.month_selector.currentText()
+        self.current_year = self.year_selector.currentText()
+        self.refresh_dashboard()
+
+    def on_filter_button_clicked(
+        self, tx_type: Optional[str], button: QPushButton
+    ) -> None:
+        for btn in self.filter_buttons:
+            active = btn is button
+            btn.setChecked(active)
+            btn.setProperty("active", "true" if active else "false")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
-    
-    def _open_add_invoice_window(self):
-        """Open add invoice window"""
+        self.transaction_filter_type = tx_type
         try:
-            if hasattr(self.controller, 'open_add_invoice_window'):
-                self.controller.open_add_invoice_window()
-            else:
-                # Try importing and opening directly
-                from add_invoice_window_qt import AddInvoiceWindowQt
-                
-                def save_callback(parent, form_data, invoice_type, invoice_id=None):
-                    # This would normally save via controller
-                    print(f"Save invoice: {form_data}")
-                    self._refresh_dashboard()
-                
-                dlg = AddInvoiceWindowQt(
-                    parent=self,
-                    controller=self.controller,
-                    tipo_factura="emitida",
-                    on_save=save_callback
+            if hasattr(self.controller, "set_transaction_filter"):
+                self.controller.set_transaction_filter(tx_type)
+        except Exception:
+            pass
+        self.refresh_transactions()
+
+    # ------------------------------------------------------------------
+    # Dashboard refresh
+    # ------------------------------------------------------------------
+    def refresh_dashboard(self) -> None:
+        month_str = self.MONTHS_MAP.get(self.current_month_name, None)
+        try:
+            year_int = int(self.current_year)
+        except Exception:
+            year_int = None
+
+        summary_data = None
+        try:
+            if hasattr(self.controller, "_refresh_dashboard"):
+                summary_data = self.controller._refresh_dashboard(month_str, year_int)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Resumen", f"No se pudo obtener el resumen: {exc}"
+            )
+
+        if summary_data:
+            try:
+                income = float(summary_data.get("income", 0.0))
+                income_itbis = float(summary_data.get("income_itbis", 0.0))
+                expense = float(summary_data.get("expense", 0.0))
+                expense_itbis = float(summary_data.get("expense_itbis", 0.0))
+                net_itbis = float(summary_data.get("net_itbis", 0.0))
+                payable = float(summary_data.get("payable", 0.0))
+                itbis_adelantado = float(summary_data.get("itbis_adelantado", 0.0))
+                payable_estimated = float(
+                    summary_data.get("payable_estimated", payable)
                 )
-                dlg.exec()
-                self._refresh_dashboard()
-        except Exception as e:
-            print(f"Error opening add invoice window: {e}")
-            QMessageBox.warning(self, "Error", f"No se pudo abrir la ventana de nueva factura:\n{e}")
-    
-    def _open_tax_calculation_manager(self):
-        """Open tax calculation manager window"""
+
+                # Card: Total Ingresos
+                self.income_value_label.setText(f"RD$ {income:,.2f}")
+                self.income_itbis_label.setText(f"ITBIS: RD$ {income_itbis:,.2f}")
+
+                # Card: Total Gastos (mostrar ITBIS de gastos y adelantado)
+                self.expense_value_label.setText(f"RD$ {expense:,.2f}")
+                self.expense_itbis_label.setText(
+                    f"ITBIS: RD$ {expense_itbis:,.2f}  "
+                    f"(Adelantado: RD$ {itbis_adelantado:,.2f})"
+                )
+
+                # Card: ITBIS Neto
+                self.net_itbis_label.setText(f"RD$ {net_itbis:,.2f}")
+
+                # Card: A Pagar (Estimado) = neto - adelantado
+                self.payable_label.setText(f"RD$ {payable_estimated:,.2f}")
+
+                # Tooltip explicativo en el card A Pagar
+                tooltip_text = (
+                    "A pagar (estimado) = ITBIS Neto − ITBIS pagado por adelantado "
+                    f"del mismo periodo.\n\n"
+                    f"ITBIS Neto: RD$ {net_itbis:,.2f}\n"
+                    f"ITBIS Adelantado: RD$ {itbis_adelantado:,.2f}\n"
+                    f"Resultado: RD$ {payable_estimated:,.2f}"
+                )
+                self.payable_label.setToolTip(tooltip_text)
+
+            except Exception:
+                pass
+
+        self.refresh_transactions()
+
+    # ------------------------------------------------------------------
+    # Transactions refresh
+    # ------------------------------------------------------------------
+    def refresh_transactions(self) -> None:
+        month_str = self.MONTHS_MAP.get(self.current_month_name, None)
         try:
-            if hasattr(self.controller, '_open_tax_calculation_manager'):
-                self.controller._open_tax_calculation_manager()
-            else:
-                # Try importing directly
-                from tax_calculation_management_window_qt import TaxCalculationManagementWindowQt
-                dlg = TaxCalculationManagementWindowQt(self, self.controller)
-                dlg.exec()
-                self._refresh_dashboard()
-        except Exception as e:
-            print(f"Error opening tax calculation manager: {e}")
-            QMessageBox.warning(self, "Error", f"No se pudo abrir el gestor de cálculos:\n{e}")
-    
-    def _open_report_window(self):
-        """Open monthly report window"""
+            year_int = int(self.current_year)
+        except Exception:
+            year_int = None
+        tx_type = self.transaction_filter_type
+
+        transactions: List[dict] = []
         try:
-            if hasattr(self.controller, '_open_report_window'):
-                self.controller._open_report_window()
-            else:
-                # Try importing directly
-                from report_window_qt import ReportWindowQt
-                dlg = ReportWindowQt(self, self.controller)
-                dlg.exec()
-        except Exception as e:
-            print(f"Error opening report window: {e}")
-            QMessageBox.warning(self, "Error", f"No se pudo abrir la ventana de reportes:\n{e}")
-    
-    # ============================================
-    # HERRAMIENTAS MENU ACTIONS
-    # ============================================
-    
-    def _open_firebase_config(self):
-        """Open Firebase configuration dialog"""
-        try:
-            from firebase_config_dialog import show_firebase_config_dialog
-            show_firebase_config_dialog(self)
-        except Exception as e:
-            print(f"Error opening Firebase config: {e}")
+            if hasattr(self.controller, "_populate_transactions_table"):
+                transactions = (
+                    self.controller._populate_transactions_table(
+                        month_str, year_int, tx_type
+                    )
+                    or []
+                )
+        except Exception as exc:
             QMessageBox.warning(
                 self,
-                "Firebase Config",
-                f"No se pudo abrir la configuración de Firebase:\n{e}\n\n"
-                "Asegúrate de que firebase_config_dialog.py existe."
+                "Transacciones",
+                f"No se pudo obtener la lista de transacciones: {exc}",
             )
-    
-    def _open_migration_dialog(self):
-        """Open SQLite to Firebase migration dialog"""
-        try:
-            from migration_dialog import show_migration_dialog
-            
-            # Get default DB path from controller
-            default_path = ""
-            if hasattr(self.controller, 'get_sqlite_db_path'):
-                default_path = self.controller.get_sqlite_db_path() or ""
-            elif hasattr(self.controller, 'db_path'):
-                default_path = self.controller.db_path or ""
-            
-            show_migration_dialog(self, default_path)
-        except Exception as e:
-            print(f"Error opening migration dialog: {e}")
-            QMessageBox.warning(
-                self,
-                "Migration Dialog",
-                f"No se pudo abrir el diálogo de migración:\n{e}\n\n"
-                "Asegúrate de que migration_dialog.py existe."
+
+        self.current_transactions = transactions
+        self._populate_table(transactions)
+
+    # ------------------------------------------------------------------
+    # Tabla de transacciones
+    # ------------------------------------------------------------------
+    def _populate_table(self, transactions: List[dict]) -> None:
+        """Populate the QTableWidget with transaction data."""
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        if not transactions:
+            return
+
+        self.table.setRowCount(len(transactions))
+
+        for row_index, trans in enumerate(transactions):
+            date_val = str(trans.get("date") or trans.get("invoice_date") or "")
+            tx_type = str(trans.get("type") or trans.get("invoice_type") or "")
+            number = str(trans.get("number") or trans.get("invoice_number") or "")
+            party = str(trans.get("party") or trans.get("third_party_name") or "")
+            itbis_val = trans.get("itbis", 0.0)
+            total_val = trans.get("total", 0.0)
+
+            if tx_type == "emitida":
+                type_display = "↑ INGRESO"
+            elif tx_type == "gasto":
+                type_display = "↓ GASTO"
+            else:
+                type_display = tx_type or ""
+
+            flags = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+
+            date_item = QTableWidgetItem(date_val)
+            date_item.setFlags(flags)
+            self.table.setItem(row_index, 0, date_item)
+
+            type_item = QTableWidgetItem(type_display)
+            type_item.setFlags(flags)
+            if tx_type == "emitida":
+                type_item.setForeground(QColor("#16A34A"))
+            elif tx_type == "gasto":
+                type_item.setForeground(QColor("#DC2626"))
+            type_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
-    
-    def _create_manual_backup(self):
-        """Create manual SQL backup"""
+            self.table.setItem(row_index, 1, type_item)
+
+            num_item = QTableWidgetItem(number)
+            num_item.setFlags(flags)
+            num_item.setData(Qt.ItemDataRole.UserRole, number)
+            self.table.setItem(row_index, 2, num_item)
+
+            party_item = QTableWidgetItem(party)
+            party_item.setFlags(flags)
+            self.table.setItem(row_index, 3, party_item)
+
+            itbis_item = QTableWidgetItem(f"RD$ {float(itbis_val):,.2f}")
+            itbis_item.setFlags(flags)
+            itbis_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.table.setItem(row_index, 4, itbis_item)
+
+            total_item = QTableWidgetItem(f"RD$ {float(total_val):,.2f}")
+            total_item.setFlags(flags)
+            total_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.table.setItem(row_index, 5, total_item)
+
+            # Colores por tipo: fila completa
+            if tx_type == "emitida":
+                bg = QColor("#ECFDF3")  # verde muy claro
+            elif tx_type == "gasto":
+                bg = QColor("#FEF2F2")  # rojo muy claro
+            else:
+                bg = None
+
+            if bg is not None:
+                for col in range(self.table.columnCount()):
+                    item = self.table.item(row_index, col)
+                    if item is not None:
+                        item.setBackground(bg)
+
+        self.table.setSortingEnabled(True)
+
+    # ------------------------------------------------------------------
+    # Menú contextual en la tabla
+    # ------------------------------------------------------------------
+    def _open_context_menu(self, pos: QPoint) -> None:
+        row = self.table.rowAt(pos.y())
+        if row < 0 or row >= self.table.rowCount():
+            return
+
+        tx = self._get_transaction_for_row(row)
+        if not tx:
+            return
+
+        invoice_number = str(
+            tx.get("number") or tx.get("invoice_number") or ""
+        ).strip()
+        if not invoice_number:
+            return
+
+        menu = QMenu(self)
+
+        act_view = QAction("Ver adjunto…", self)
+        act_edit = QAction("Editar transacción…", self)
+        act_delete = QAction("Eliminar transacción…", self)
+
+        act_view.triggered.connect(lambda: self._view_attachment(invoice_number, tx))
+        act_edit.triggered.connect(lambda: self._edit_transaction(invoice_number, tx))
+        act_delete.triggered.connect(
+            lambda: self._delete_transaction(invoice_number, tx)
+        )
+
+        menu.addAction(act_view)
+        menu.addSeparator()
+        menu.addAction(act_edit)
+        menu.addAction(act_delete)
+
+        global_pos = self.table.viewport().mapToGlobal(pos)
+        menu.exec(global_pos)
+
+    def _get_transaction_for_row(self, row: int) -> Optional[dict]:
+        if not self.current_transactions:
+            return None
+        if 0 <= row < len(self.current_transactions):
+            return self.current_transactions[row]
+        return None
+
+    def _edit_transaction(self, invoice_number: str, tx: dict) -> None:
         try:
-            if hasattr(self.controller, 'create_sql_backup'):
-                backup_path = self.controller.create_sql_backup(retention_days=30)
-                QMessageBox.information(
-                    self,
-                    "Backup Creado",
-                    f"Backup SQL creado exitosamente:\n\n{backup_path}\n\n"
-                    "Este backup se eliminará automáticamente en 30 días."
-                )
+            if hasattr(self.controller, "edit_invoice_by_number"):
+                self.controller.edit_invoice_by_number(invoice_number, parent=self)
+                self.refresh_dashboard()
             else:
                 QMessageBox.information(
                     self,
-                    "Backup Manual",
-                    "Función de backup manual aún no implementada en el controlador.\n\n"
-                    "El controlador debe implementar el método:\n"
-                    "create_sql_backup(retention_days=30) -> str"
+                    "Editar",
+                    "El controlador no implementa 'edit_invoice_by_number'.",
                 )
-        except Exception as e:
-            print(f"Error creating backup: {e}")
+        except Exception as exc:
             QMessageBox.critical(
                 self,
-                "Error",
-                f"Error al crear el backup:\n{e}"
+                "Editar transacción",
+                f"No se pudo editar la factura {invoice_number}: {exc}",
             )
 
+    def _delete_transaction(self, invoice_number: str, tx: dict) -> None:
+        confirm = QMessageBox.question(
+            self,
+            "Eliminar transacción",
+            f"¿Seguro que deseas eliminar la factura {invoice_number}?\n"
+            "Esta acción no se puede deshacer.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
 
-def run_demo(controller=None):
-    """
-    Helper function to run the modern GUI for testing.
-    
-    Args:
-        controller: Optional controller instance. If None, creates a mock controller.
-    """
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv)
-    
-    # Apply stylesheet
-    app.setStyleSheet(STYLESHEET)
-    
-    # Create controller if not provided
-    if controller is None:
-        # Try to import and create real controller
         try:
-            from logic_qt import LogicControllerQt
-            import os
-            
-            # Look for database
-            possible_paths = [
-                'facturas_db.db',
-                '/home/runner/work/FACTURAS-PyQT6-GIT/FACTURAS-PyQT6-GIT/facturas_db.db'
-            ]
-            
-            db_path = None
-            for path in possible_paths:
-                if os.path.exists(path):
-                    db_path = path
-                    break
-            
-            if db_path:
-                controller = LogicControllerQt(db_path)
+            if hasattr(self.controller, "delete_invoice_by_number"):
+                self.controller.delete_invoice_by_number(invoice_number, parent=self)
+                self.refresh_dashboard()
             else:
-                print("Warning: No database found, using mock controller")
-                controller = None
+                QMessageBox.information(
+                    self,
+                    "Eliminar",
+                    "El controlador no implementa 'delete_invoice_by_number'.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Eliminar transacción",
+                f"No se pudo eliminar la factura {invoice_number}: {exc}",
+            )
+
+    def _view_attachment(self, invoice_number: str, tx: dict) -> None:
+        try:
+            if hasattr(self.controller, "view_invoice_attachment_by_number"):
+                self.controller.view_invoice_attachment_by_number(
+                    invoice_number, parent=self
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Ver adjunto",
+                    "El controlador no implementa 'view_invoice_attachment_by_number'.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Ver adjunto",
+                f"No se pudo abrir el adjunto de la factura {invoice_number}: {exc}",
+            )
+
+    # ------------------------------------------------------------------
+    # Dialog and external action helpers
+    # ------------------------------------------------------------------
+    def open_add_income_invoice(self) -> None:
+        try:
+            if hasattr(self.controller, "open_add_income_invoice_window"):
+                self.controller.open_add_income_invoice_window(parent=self)
+            elif hasattr(self.controller, "open_add_invoice_window"):
+                self.controller.open_add_invoice_window()
+            else:
+                QMessageBox.information(
+                    self,
+                    "Nueva Factura",
+                    "El controlador no implementa alta de facturas emitidas.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Nueva Factura", f"No se pudo abrir la ventana de ingreso: {exc}"
+            )
+
+    def open_add_expense_invoice(self) -> None:
+        try:
+            if hasattr(self.controller, "open_add_expense_invoice_window"):
+                self.controller.open_add_expense_invoice_window(parent=self)
+            else:
+                QMessageBox.information(
+                    self,
+                    "Factura de Gasto",
+                    "El controlador no implementa alta de facturas de gasto.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Factura de Gasto",
+                f"No se pudo abrir la ventana de gasto: {exc}",
+            )
+
+    def open_tax_manager(self) -> None:
+        if hasattr(self.controller, "_open_tax_calculation_manager"):
+            self.controller._open_tax_calculation_manager()
+
+    def open_itbis_summary(self) -> None:
+        try:
+            if hasattr(self.controller, "_open_itbis_summary"):
+                self.controller._open_itbis_summary()
+            else:
+                QMessageBox.information(
+                    self, "Resumen ITBIS", "Resumen ITBIS no disponible."
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Resumen ITBIS", f"No se pudo abrir el resumen ITBIS: {exc}"
+            )
+
+    def open_report_window(self) -> None:
+        try:
+            if hasattr(self.controller, "_open_report_window"):
+                self.controller._open_report_window()
+            else:
+                QMessageBox.information(
+                    self, "Reportes", "Función de reportes no disponible."
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Reportes", f"No se pudo abrir el reporte: {exc}"
+            )
+
+    def open_migration_dialog(self) -> None:
+        if migration_dialog is None:
+            QMessageBox.warning(
+                self, "Migración", "El módulo de migración no está disponible."
+            )
+            return
+        try:
+            default_path = ""
+            try:
+                if hasattr(self.controller, "get_sqlite_db_path"):
+                    default_path = self.controller.get_sqlite_db_path() or ""
+            except Exception:
+                default_path = ""
+            if hasattr(migration_dialog, "show_migration_dialog"):
+                migration_dialog.show_migration_dialog(self, default_db_path=default_path)
+            else:
+                QMessageBox.information(
+                    self, "Migración", "El diálogo de migración no está implementado."
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Migración", f"No se pudo abrir el diálogo de migración: {exc}"
+            )
+
+    def open_firebase_config(self) -> None:
+        if firebase_config_dialog is None:
+            QMessageBox.warning(
+                self,
+                "Configurar Firebase",
+                "El módulo de configuración de Firebase no está disponible.",
+            )
+            return
+        try:
+            if hasattr(firebase_config_dialog, "show_firebase_config_dialog"):
+                accepted = firebase_config_dialog.show_firebase_config_dialog(
+                    self, controller=self.controller
+                )
+                if accepted and hasattr(self.controller, "on_firebase_config_updated"):
+                    self.controller.on_firebase_config_updated()
+                    self.refresh_dashboard()
+            else:
+                QMessageBox.information(
+                    self,
+                    "Configurar Firebase",
+                    "El diálogo de configuración no está implementado.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Configurar Firebase",
+                f"No se pudo abrir la configuración: {exc}",
+            )
+
+    def create_manual_backup(self) -> None:
+        try:
+            if hasattr(self.controller, "create_sql_backup"):
+                path = self.controller.create_sql_backup(retention_days=30)
+                QMessageBox.information(
+                    self,
+                    "Backup SQL",
+                    f"Backup creado en: {path}\nEste archivo se eliminará automáticamente en 30 días.",
+                )
+            else:
+                QMessageBox.information(
+                    self, "Backup", "El controlador no soporta crear backups."
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Backup", f"No se pudo crear el backup: {exc}"
+            )
+
+    # ------------------------------------------------------------------
+    # Table double-click handler
+    # ------------------------------------------------------------------
+    def on_table_double_click(self, row: int, column: int) -> None:
+        if row < 0:
+            return
+        try:
+            item = self.table.item(row, 2)
+            invoice_number = (
+                item.data(Qt.ItemDataRole.UserRole) if item else None
+            )
+            if not invoice_number:
+                return
+            if hasattr(self.controller, "diagnose_row"):
+                self.controller.diagnose_row(number=invoice_number)
+            else:
+                QMessageBox.information(
+                    self,
+                    "Diagnóstico",
+                    f"Diagnóstico de factura {invoice_number}: función no disponible.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Diagnóstico", f"No se pudo diagnosticar la fila: {exc}"
+            )
+
+    # ------------------------------------------------------------------
+    # Menú clásico: placeholders
+    # ------------------------------------------------------------------
+    def _change_database(self):
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self,
+            "Cambiar Base de Datos",
+            "Esta función no está disponible en el backend Firebase.\n"
+            "Si necesitas cambiar de base SQLite, usa la versión clásica.",
+        )
+
+    def _backup_database(self):
+        from PyQt6.QtWidgets import QMessageBox
+        if hasattr(self.controller, "create_sql_backup"):
+            try:
+                path = self.controller.create_sql_backup()
+                QMessageBox.information(
+                    self,
+                    "Copia de Seguridad",
+                    f"Se creó un backup simbólico (Firebase):\n{path}",
+                )
+                return
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "Copia de Seguridad",
+                    f"No se pudo crear el backup:\n{e}",
+                )
+                return
+        QMessageBox.warning(
+            self,
+            "Copia de Seguridad",
+            "El controlador no soporta creación de backups.",
+        )
+
+    def _restore_database(self):
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self,
+            "Restaurar Copia de Seguridad",
+            "Restaurar backups no está implementado en el backend Firebase.",
+        )
+
+    def _open_report_window(self):
+        """Abre la ventana de reporte mensual clásico usando el controller actual."""
+        try:
+            from reporte_mensual_window import ReportWindowQt
+        except Exception:
+            QMessageBox.information(
+                self,
+                "Reportes",
+                "El módulo de reporte mensual (reporte_mensual_window.py) no está disponible.",
+            )
+            return
+
+        try:
+            dlg = ReportWindowQt(self, self.controller)
+            dlg.exec()
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Reportes", f"No se pudo abrir el reporte mensual: {exc}"
+            )
+
+    def _open_third_party_report_window(self):
+        """Abre el reporte por Cliente/Proveedor usando el controller actual."""
+        try:
+            from reporte_cliente_window import ThirdPartyReportWindowQt
+        except Exception:
+            QMessageBox.information(
+                self,
+                "Reportes por Cliente/Proveedor",
+                "El módulo reporte_cliente_window.py no está disponible.",
+            )
+            return
+
+        try:
+            dlg = ThirdPartyReportWindowQt(self, self.controller)
+            dlg.exec()
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Reportes por Cliente/Proveedor",
+                f"No se pudo abrir el reporte: {exc}",
+            )
+
+    def open_reports_menu(self) -> None:
+        from PyQt6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        action_monthly = menu.addAction("Reporte Mensual...")
+        action_third_party = menu.addAction("Reporte por Cliente/Proveedor...")
+        action_monthly.triggered.connect(self._open_report_window)
+        action_third_party.triggered.connect(self._open_third_party_report_window)
+
+        # Si tenemos el botón 'reportes', posicionar el menú junto a él
+        btn = getattr(self, "nav_buttons_by_key", {}).get("reportes")
+        if btn is not None:
+            global_pos = btn.mapToGlobal(btn.rect().bottomLeft())
+        else:
+            global_pos = self.mapToGlobal(self.cursor().pos())
+
+        menu.exec(global_pos)
+
+    def get_current_company_id(self):
+        """
+        Devuelve el ID de la empresa activa usando el controller actual.
+        Se usa por las ventanas de reporte clásicas.
+        """
+        try:
+            if hasattr(self.controller, "active_company_id"):
+                return self.controller.active_company_id
+        except Exception:
+            pass
+        return None
+
+    def _open_settings_window(self):
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self,
+            "Configuración",
+            "La configuración general aún no está implementada en el dashboard moderno.\n"
+            "Puedes configurar Firebase desde el menú Herramientas.",
+        )
+
+    def _change_theme(self, theme_name: str):
+        from PyQt6.QtWidgets import QApplication, QMessageBox, QStyleFactory
+
+        app = QApplication.instance()
+        if not app:
+            return
+
+        try:
+            available = QStyleFactory.keys()
+            if theme_name in available:
+                app.setStyle(QStyleFactory.create(theme_name))
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Tema no disponible",
+                    f"El tema '{theme_name}' no está disponible en esta plataforma.\n"
+                    f"Temas disponibles: {', '.join(available)}",
+                )
         except Exception as e:
-            print(f"Warning: Could not create controller: {e}")
-            controller = None
-    
-    # Create and show window
-    window = ModernMainWindow(controller)
+            QMessageBox.warning(
+                self,
+                "Error cambiando tema",
+                f"No se pudo cambiar el tema:\n{e}",
+            )
+
+    def open_tax_calculation_manager(self):
+        from tax_calculation_management_window_qt import TaxCalculationManagementWindowQt
+        dlg = TaxCalculationManagementWindowQt(self, self.controller)
+        dlg.exec()
+
+    def open_itbis_summary_window(self) -> None:
+        """Abre la ventana de resumen ITBIS para la empresa y mes/año actuales."""
+        from itbis_summary_window_qt import ItbisSummaryWindowQt
+
+        # Determinar empresa activa
+        company_id = None
+        try:
+            if hasattr(self.controller, "active_company_id"):
+                company_id = self.controller.active_company_id
+        except Exception:
+            company_id = None
+
+        if not company_id:
+            QMessageBox.warning(
+                self,
+                "Resumen ITBIS",
+                "No hay empresa activa seleccionada.",
+            )
+            return
+
+        month_str = self.MONTHS_MAP.get(self.current_month_name, None)
+        try:
+            year_int = int(self.current_year)
+        except Exception:
+            year_int = None
+
+        if not month_str or year_int is None:
+            QMessageBox.warning(
+                self,
+                "Resumen ITBIS",
+                "Mes o año no válidos para el resumen.",
+            )
+            return
+
+        company_name = self.company_selector.currentText()
+
+        dlg = ItbisSummaryWindowQt(
+            parent=self,
+            controller=self.controller,
+            company_id=company_id,
+            company_name=company_name,
+            month_str=month_str,
+            year_int=year_int,
+        )
+        dlg.exec()
+
+
+def run_demo(controller=None) -> None:
+    """Helper for local testing of the ModernMainWindow."""
+
+    class StubController:
+        def __init__(self):
+            self.active_company: Optional[str] = None
+            self.tx_filter: Optional[str] = None
+
+        def list_companies(self) -> List[str]:
+            return ["Empresa A", "Empresa B", "Empresa C"]
+
+        def set_active_company(self, name: str) -> None:
+            self.active_company = name
+
+        def get_unique_invoice_years(self, company_id=None) -> List[int]:
+            current_year = datetime.date.today().year
+            return [current_year - i for i in range(3)]
+
+        def set_transaction_filter(self, tx_type: Optional[str]) -> None:
+            self.tx_filter = tx_type
+
+        def _refresh_dashboard(self, month: Optional[str], year: Optional[int]):
+            return {
+                "income": 1250000.00,
+                "income_itbis": 225000.00,
+                "expense": 450000.00,
+                "expense_itbis": 81000.00,
+                "net_itbis": 144000.00,
+                "payable": 144000.00,
+            }
+
+        def _populate_transactions_table(
+            self, month: Optional[str], year: Optional[int], tx_type: Optional[str]
+        ):
+            data = [
+                {
+                    "date": "2025-10-14",
+                    "type": "emitida",
+                    "number": "E3100000239",
+                    "party": "Barnhouse Services Srl",
+                    "itbis": 12000.00,
+                    "total": 78000.00,
+                },
+                {
+                    "date": "2025-10-12",
+                    "type": "gasto",
+                    "number": "B0100005512",
+                    "party": "Ferretería Americana",
+                    "itbis": 450.00,
+                    "total": 2950.00,
+                },
+            ]
+            if tx_type == "emitida":
+                return [d for d in data if d["type"] == "emitida"]
+            if tx_type == "gasto":
+                return [d for d in data if d["type"] == "gasto"]
+            return data
+
+        def open_add_income_invoice_window(self, parent=None):
+            print("Add income invoice window would open here.")
+
+        def open_add_expense_invoice_window(self, parent=None):
+            print("Add expense invoice window would open here.")
+
+        def diagnose_row(self, number):
+            print(f"Diagnosing row with number: {number}")
+
+        def get_sqlite_db_path(self) -> str:
+            return "/path/to/db.sqlite3"
+
+        def create_sql_backup(self, retention_days: int) -> str:
+            return "/tmp/backup.db"
+
+        # Métodos dummy para probar el menú contextual
+        def edit_invoice_by_number(self, invoice_number, parent=None):
+            print(f"EDIT {invoice_number}")
+
+        def delete_invoice_by_number(self, invoice_number, parent=None):
+            print(f"DELETE {invoice_number}")
+
+        def view_invoice_attachment_by_number(self, invoice_number, parent=None):
+            print(f"VIEW ATTACHMENT {invoice_number}")
+
+    app = QApplication(sys.argv)
+    controller_to_use = controller or StubController()
+    window = ModernMainWindow(controller_to_use)
     window.show()
-    
-    if app:
-        sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    run_demo()
+    sys.exit(app.exec())
