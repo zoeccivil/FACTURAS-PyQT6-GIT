@@ -1,0 +1,1 @@
+Backup simbólico: Firestore no usa SQLite.

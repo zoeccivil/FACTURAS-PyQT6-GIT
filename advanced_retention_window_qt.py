@@ -1,37 +1,52 @@
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QGroupBox, QDateEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QFileDialog, QInputDialog, QMessageBox, QWidget, QFormLayout
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QGroupBox,
+    QDateEdit,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QFileDialog,
+    QInputDialog,
+    QMessageBox,
+    QWidget,
+    QFrame,
 )
 from PyQt6.QtCore import Qt, QDate
-from PyQt6.QtGui import QColor
-import report_generator
 from datetime import datetime
 
 
 class AdvancedRetentionWindowQt(QDialog):
     """
-    Ventana PyQt6 para cálculo avanzado de impuestos y retenciones.
-    - Permite maximizar/restaurar la ventana.
-    - Columnas son interactuables (el usuario puede redimensionarlas) y
-      la última columna se estira para llenar el ancho disponible.
+    Ventana moderna para cálculo avanzado de impuestos y retenciones.
+
+    - Filtros por rango de fechas.
+    - Definición de % a pagar sobre el total de factura.
+    - Selección de facturas y retenciones.
+    - Resumen por moneda y total convertido a RD$.
+    - Guardar escenario y exportar PDF (usando controller/report_generator).
     """
+
     def __init__(self, parent, controller, calculation_id=None):
         super().__init__(parent)
         self.parent = parent
         self.controller = controller
         self.calculation_id = calculation_id
         self.calculation_name = ""
+
         self.setWindowTitle("Cálculo de Impuestos y Retenciones")
         self.resize(1100, 700)
 
-        # Habilitar que la ventana tenga botones de minimizar/maximizar y sea redimensionable
-        # (QDialog por defecto es redimensionable, pero necesitamos exponer los botones)
+        # Habilitar botones de minimizar / maximizar
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.setModal(True)
-        self.setSizeGripEnabled(True)  # muestra el grip en la esquina para redimensionar
+        self.setSizeGripEnabled(True)
 
         # Data
         self.all_invoices = []
@@ -39,110 +54,305 @@ class AdvancedRetentionWindowQt(QDialog):
         self.debug = False
 
         # UI state
-        self.percent_to_pay_edit = None
+        self.percent_to_pay_edit: QLineEdit | None = None
+        self.start_date: QDateEdit | None = None
+        self.end_date: QDateEdit | None = None
+        self.table: QTableWidget | None = None
+        self.results_widget: QGroupBox | None = None
+        self.results_layout: QVBoxLayout | None = None
 
         self._build_ui()
 
         if self.calculation_id:
             self._load_calculation_data()
 
+    # ------------------------------------------------------------------ #
+    # UI
+    # ------------------------------------------------------------------ #
     def _build_ui(self):
-        main = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(0)
 
-        # Top: filters and percent
+        # Card principal
+        card = QFrame()
+        card.setObjectName("advancedTaxCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(20, 16, 20, 16)
+        card_layout.setSpacing(16)
+
+        # Header
+        header_layout = QVBoxLayout()
+        title = QLabel("Cálculo de Impuestos y Retenciones")
+        title.setStyleSheet(
+            "font-size: 18px; font-weight: 600; color: #0F172A;"
+        )
+        subtitle = QLabel(
+            "Selecciona facturas emitidas, define un porcentaje a pagar y aplica "
+            "retenciones para obtener el total de impuestos por moneda y en RD$."
+        )
+        subtitle.setStyleSheet("font-size: 12px; color: #6B7280;")
+        subtitle.setWordWrap(True)
+
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        card_layout.addLayout(header_layout)
+
+        # Línea separadora
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        card_layout.addWidget(line)
+
+        # ------------------------------------------------------------------
+        # Sección superior: Filtros + Porcentaje
+        # ------------------------------------------------------------------
         top_row = QHBoxLayout()
+        top_row.setSpacing(16)
 
-        # Filter group
+        # Grupo filtros
         filter_group = QGroupBox("1. Filtrar Facturas de Ingreso")
-        filter_layout = QFormLayout()
+        filter_group.setObjectName("dialogGroupBox")
+        fg_layout = QVBoxLayout()
+        fg_layout.setContentsMargins(10, 10, 10, 10)
+        fg_layout.setSpacing(6)
+
+        dates_row = QHBoxLayout()
+        dates_row.setSpacing(8)
+
+        lbl_desde = QLabel("Desde:")
+        lbl_desde.setStyleSheet("font-size: 12px; color: #374151;")
         self.start_date = QDateEdit(calendarPopup=True)
         self.start_date.setDisplayFormat("yyyy-MM-dd")
         self.start_date.setDate(QDate.currentDate())
+
+        lbl_hasta = QLabel("Hasta:")
+        lbl_hasta.setStyleSheet("font-size: 12px; color: #374151;")
         self.end_date = QDateEdit(calendarPopup=True)
         self.end_date.setDisplayFormat("yyyy-MM-dd")
         self.end_date.setDate(QDate.currentDate())
-        filter_layout.addRow(QLabel("Desde:"), self.start_date)
-        filter_layout.addRow(QLabel("Hasta:"), self.end_date)
+
+        dates_row.addWidget(lbl_desde)
+        dates_row.addWidget(self.start_date)
+        dates_row.addSpacing(12)
+        dates_row.addWidget(lbl_hasta)
+        dates_row.addWidget(self.end_date)
+        dates_row.addStretch()
+
+        fg_layout.addLayout(dates_row)
+
         btn_search = QPushButton("Buscar Facturas")
+        btn_search.setObjectName("primaryButton")
+        btn_search.setMinimumHeight(32)
         btn_search.clicked.connect(self._search_invoices)
-        filter_layout.addRow(btn_search)
-        filter_group.setLayout(filter_layout)
-        top_row.addWidget(filter_group, 1)
+        fg_layout.addWidget(btn_search)
 
-        # Percent group
+        filter_group.setLayout(fg_layout)
+        top_row.addWidget(filter_group, 2)
+
+        # Grupo porcentaje
         percent_group = QGroupBox("2. Definir Porcentaje a Pagar")
-        percent_layout = QVBoxLayout()
-        lbl = QLabel("% sobre Total Factura:")
-        percent_layout.addWidget(lbl)
+        percent_group.setObjectName("dialogGroupBox")
+        pg_layout = QVBoxLayout()
+        pg_layout.setContentsMargins(10, 10, 10, 10)
+        pg_layout.setSpacing(8)
+
+        lbl_pct = QLabel("% sobre Total Factura:")
+        lbl_pct.setStyleSheet("font-size: 12px; color: #374151;")
+        pg_layout.addWidget(lbl_pct)
+
+        pct_row = QHBoxLayout()
+        pct_row.setSpacing(6)
         self.percent_to_pay_edit = QLineEdit("2.0")
-        self.percent_to_pay_edit.setMaximumWidth(120)
+        self.percent_to_pay_edit.setMaximumWidth(80)
+        self.percent_to_pay_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.percent_to_pay_edit.textChanged.connect(self._on_percent_change)
-        percent_layout.addWidget(self.percent_to_pay_edit)
-        percent_group.setLayout(percent_layout)
-        top_row.addWidget(percent_group)
+        pct_row.addWidget(self.percent_to_pay_edit)
+        pct_row.addWidget(QLabel("%"))
+        pct_row.addStretch()
 
-        main.addLayout(top_row)
+        pg_layout.addLayout(pct_row)
+        pg_layout.addStretch()
 
-        # Tree / Table group
+        percent_group.setLayout(pg_layout)
+        top_row.addWidget(percent_group, 1)
+
+        card_layout.addLayout(top_row)
+
+        # ------------------------------------------------------------------
+        # Tabla de facturas
+        # ------------------------------------------------------------------
         tree_group = QGroupBox("3. Seleccionar Facturas y Aplicar Retenciones")
+        tree_group.setObjectName("dialogGroupBox")
         tree_layout = QVBoxLayout()
+        tree_layout.setContentsMargins(10, 10, 10, 10)
+        tree_layout.setSpacing(6)
 
-        # Columns:
         cols = [
-            "Sel.", "Fecha", "No. Factura", "Empresa",
-            "Subtotal", "ITBIS", "Total Factura",
-            "Retención ITBIS?", "Valor Retención", "% A Pagar", "Total Impuestos"
+            "Sel.",
+            "Fecha",
+            "No. Factura",
+            "Empresa",
+            "Subtotal",
+            "ITBIS",
+            "Total Factura",
+            "Retención ITBIS?",
+            "Valor Retención",
+            "% A Pagar",
+            "Total Impuestos",
         ]
         self.table = QTableWidget(0, len(cols))
         self.table.setHorizontalHeaderLabels(cols)
+
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)  # allow user resizing
-        header.setStretchLastSection(True)  # last column fills remaining space
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
         header.setSectionsMovable(True)
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
-        # sensible minimums so columns are usable
-        header.setMinimumSectionSize(50)
-        # Set default column widths (reasonable guesses); user can resize them
-        default_widths = [60, 90, 120, 250, 100, 100, 120, 100, 110, 110, 140]
+        header.setMinimumSectionSize(60)
+
+        default_widths = [55, 90, 120, 230, 100, 90, 110, 110, 110, 110, 130]
         for i, w in enumerate(default_widths):
             if i < self.table.columnCount():
                 self.table.setColumnWidth(i, w)
 
-        # connect click
+        self.table.setAlternatingRowColors(False)
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self.table.verticalHeader().setVisible(False)
         self.table.cellClicked.connect(self._on_table_cell_clicked)
 
         tree_layout.addWidget(self.table)
         tree_group.setLayout(tree_layout)
-        main.addWidget(tree_group, 1)
+        card_layout.addWidget(tree_group, 1)
 
-        # Bottom: results and actions
+        # ------------------------------------------------------------------
+        # Parte inferior: resultados + acciones
+        # ------------------------------------------------------------------
         bottom_layout = QHBoxLayout()
+        bottom_layout.setSpacing(16)
 
-        # Results - dynamic area
         self.results_widget = QGroupBox("4. Resultado Final por Moneda de Origen")
+        self.results_widget.setObjectName("dialogGroupBox")
         self.results_layout = QVBoxLayout()
+        self.results_layout.setContentsMargins(10, 10, 10, 10)
+        self.results_layout.setSpacing(4)
         self.results_widget.setLayout(self.results_layout)
-        bottom_layout.addWidget(self.results_widget, 1)
+        bottom_layout.addWidget(self.results_widget, 2)
 
-        # Actions
         actions_widget = QWidget()
         actions_layout = QVBoxLayout(actions_widget)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+
         btn_save = QPushButton("Guardar Cálculo")
+        btn_save.setObjectName("primaryButton")
+        btn_save.setMinimumHeight(32)
         btn_save.clicked.connect(self._save_calculation)
+
         btn_export = QPushButton("Generar Reporte PDF")
+        btn_export.setObjectName("secondaryButton")
+        btn_export.setMinimumHeight(32)
         btn_export.clicked.connect(self._export_pdf)
+
+        btn_close = QPushButton("Cerrar")
+        btn_close.setObjectName("secondaryButton")
+        btn_close.setMinimumHeight(28)
+        btn_close.clicked.connect(self.reject)
+
         actions_layout.addWidget(btn_save)
         actions_layout.addWidget(btn_export)
         actions_layout.addStretch()
-        bottom_layout.addWidget(actions_widget)
+        actions_layout.addWidget(btn_close)
 
-        main.addLayout(bottom_layout)
+        bottom_layout.addWidget(actions_widget, 1)
 
-    # -------------------------
-    # Load existing calculation
-    # -------------------------
+        card_layout.addLayout(bottom_layout)
+        root.addWidget(card)
+
+        self.setStyleSheet(
+            self.styleSheet()
+            + """
+        QFrame#advancedTaxCard {
+            background-color: #FFFFFF;
+            border-radius: 12px;
+            border: 1px solid #E2E8F0;
+        }
+        QGroupBox#dialogGroupBox {
+            border: 1px solid #E5E7EB;
+            border-radius: 8px;
+            margin-top: 12px;
+            background-color: #F9FAFB;
+        }
+        QGroupBox#dialogGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 4px 0 4px;
+            color: #1F2933;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        QDateEdit, QLineEdit {
+            background-color: #F9FAFB;
+            border: 1px solid #D1D5DB;
+            border-radius: 6px;
+            padding: 4px 6px;
+            color: #111827;
+        }
+        QDateEdit::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: center right;
+            width: 18px;
+        }
+        QDateEdit:focus, QLineEdit:focus {
+            border-color: #3B82F6;
+        }
+        QTableWidget {
+            background-color: #FFFFFF;
+            gridline-color: #E5E7EB;
+            selection-background-color: #DBEAFE;
+            selection-color: #111827;
+        }
+        QHeaderView::section {
+            background-color: #F9FAFB;
+            padding: 4px;
+            border: 1px solid #E5E7EB;
+            font-weight: 500;
+            color: #4B5563;
+        }
+        QPushButton#primaryButton {
+            background-color: #1E293B;
+            color: #FFFFFF;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-weight: 500;
+            border: none;
+        }
+        QPushButton#primaryButton:hover {
+            background-color: #0F172A;
+        }
+        QPushButton#secondaryButton {
+            background-color: #F9FAFB;
+            color: #374151;
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: 1px solid #D1D5DB;
+            font-weight: 500;
+        }
+        QPushButton#secondaryButton:hover {
+            background-color: #E5E7EB;
+        }
+        """
+        )
+
+    # ------------------------------------------------------------------ #
+    # Cargar cálculo existente
+    # ------------------------------------------------------------------ #
     def _load_calculation_data(self):
         try:
             data = self.controller.get_tax_calculation_details(self.calculation_id)
@@ -162,27 +372,26 @@ class AdvancedRetentionWindowQt(QDialog):
         self.calculation_name = main.get("name", "")
         self.setWindowTitle(f"Editando Cálculo: {self.calculation_name}")
 
-        # set dates and percent
         try:
             sd = main.get("start_date")
             ed = main.get("end_date")
             if sd:
-                self.start_date.setDate(QDate.fromString(sd, "yyyy-MM-dd"))
+                self.start_date.setDate(QDate.fromString(str(sd)[:10], "yyyy-MM-dd"))
             if ed:
-                self.end_date.setDate(QDate.fromString(ed, "yyyy-MM-dd"))
+                self.end_date.setDate(QDate.fromString(str(ed)[:10], "yyyy-MM-dd"))
             self.percent_to_pay_edit.setText(str(main.get("percent_to_pay", "2.0")))
         except Exception:
             pass
 
-        # search invoices with preselected details
         self._search_invoices(preselected_details=details)
 
-    # -------------------------
-    # Search / populate
-    # -------------------------
+    # ------------------------------------------------------------------ #
+    # Búsqueda y poblar tabla
+    # ------------------------------------------------------------------ #
     def _search_invoices(self, preselected_details=None):
         start = self.start_date.date().toString("yyyy-MM-dd")
         end = self.end_date.date().toString("yyyy-MM-dd")
+
         company_id = None
         try:
             company_id = self.parent.get_current_company_id()
@@ -190,12 +399,16 @@ class AdvancedRetentionWindowQt(QDialog):
             company_id = None
 
         try:
-            raw_invoices = self.controller.get_emitted_invoices_for_period(company_id, start, end) or []
+            raw_invoices = (
+                self.controller.get_emitted_invoices_for_period(
+                    company_id, start, end
+                )
+                or []
+            )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo obtener facturas: {e}")
             return
 
-        # Normalizar cada invoice a dict para que invoice.get(...) funcione
         invoices = []
         for inv in raw_invoices:
             try:
@@ -210,96 +423,122 @@ class AdvancedRetentionWindowQt(QDialog):
                         invoices.append(inv)
         self.all_invoices = invoices
 
-        # limpiar tabla y estados
         self.table.setRowCount(0)
         self.tree_item_states.clear()
 
         if not self.all_invoices:
             if not preselected_details:
-                QMessageBox.information(self, "Sin Datos", "No se encontraron facturas de ingreso en el rango de fechas.")
+                QMessageBox.information(
+                    self,
+                    "Sin Datos",
+                    "No se encontraron facturas de ingreso en el rango de fechas.",
+                )
             return
 
-        # Fill table and initial states
         for inv in self.all_invoices:
             inv_id = int(inv.get("id"))
-            # determine selection from preselected_details if any
+
             is_selected = False
             has_retention = False
             if preselected_details and inv_id in preselected_details:
                 detail = preselected_details[inv_id]
-                # detail truthy -> retention enabled
-                is_selected = True
-                has_retention = bool(detail)
+                is_selected = bool(detail.get("selected", True))
+                has_retention = bool(detail.get("retention", False))
 
-            self.tree_item_states[inv_id] = {"selected": is_selected, "retention": has_retention}
+            self.tree_item_states[inv_id] = {
+                "selected": is_selected,
+                "retention": has_retention,
+            }
 
             exchange = float(inv.get("exchange_rate", 1.0) or 1.0)
             itbis_rd = float(inv.get("itbis", 0.0)) * exchange
-            total_rd = float(inv.get("total_amount_rd") or (float(inv.get("total_amount", 0.0)) * exchange))
+            total_rd = float(
+                inv.get("total_amount_rd")
+                or (float(inv.get("total_amount", 0.0)) * exchange)
+            )
             subtotal_rd = total_rd - itbis_rd
 
             row = self.table.rowCount()
             self.table.insertRow(row)
 
-            # Sel checkbox - use checkstate in item
             sel_item = QTableWidgetItem()
-            sel_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            sel_item.setCheckState(Qt.CheckState.Checked if is_selected else Qt.CheckState.Unchecked)
+            sel_item.setFlags(
+                Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+            sel_item.setCheckState(
+                Qt.CheckState.Checked if is_selected else Qt.CheckState.Unchecked
+            )
             sel_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 0, sel_item)
 
-            self.table.setItem(row, 1, QTableWidgetItem(str(inv.get("invoice_date", ""))))
-            # invoice number item stores invoice id in UserRole for later ops
+            self.table.setItem(
+                row, 1, QTableWidgetItem(str(inv.get("invoice_date", "")))
+            )
+
             inv_item = QTableWidgetItem(str(inv.get("invoice_number", "")))
             inv_item.setData(Qt.ItemDataRole.UserRole, inv_id)
             self.table.setItem(row, 2, inv_item)
 
-            self.table.setItem(row, 3, QTableWidgetItem(str(inv.get("third_party_name", ""))))
+            self.table.setItem(
+                row, 3, QTableWidgetItem(str(inv.get("third_party_name", "")))
+            )
 
             subtotal_item = QTableWidgetItem(f"{subtotal_rd:,.2f}")
-            subtotal_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            subtotal_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             self.table.setItem(row, 4, subtotal_item)
 
             itbis_item = QTableWidgetItem(f"{itbis_rd:,.2f}")
-            itbis_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            itbis_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             self.table.setItem(row, 5, itbis_item)
 
             total_item = QTableWidgetItem(f"{total_rd:,.2f}")
-            total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            total_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             self.table.setItem(row, 6, total_item)
 
-            # Retention checkbox cell
             ret_item = QTableWidgetItem()
-            ret_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            ret_item.setCheckState(Qt.CheckState.Checked if has_retention else Qt.CheckState.Unchecked)
+            ret_item.setFlags(
+                Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+            ret_item.setCheckState(
+                Qt.CheckState.Checked if has_retention else Qt.CheckState.Unchecked
+            )
             ret_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 7, ret_item)
 
-            # Value cells (will be recalculated)
             rv = QTableWidgetItem("0.00")
-            rv.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            rv.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             self.table.setItem(row, 8, rv)
 
             mp = QTableWidgetItem("0.00")
-            mp.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            mp.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             self.table.setItem(row, 9, mp)
 
             ti = QTableWidgetItem("0.00")
-            ti.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            ti.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             self.table.setItem(row, 10, ti)
 
-        # After table filled, recalc
         self._recalculate_and_update()
 
-    # -------------------------
-    # Interaction handlers
-    # -------------------------
+    # ------------------------------------------------------------------ #
+    # Interacción
+    # ------------------------------------------------------------------ #
     def _on_table_cell_clicked(self, row, column):
-        """
-        Handle clicks:
-         - column 0: toggle selection checkbox
-         - column 7: toggle retention checkbox (only if selected)
-        """
         try:
             id_item = self.table.item(row, 2)
             if not id_item:
@@ -335,11 +574,11 @@ class AdvancedRetentionWindowQt(QDialog):
     def _on_percent_change(self, *_):
         self._recalculate_and_update()
 
-    # -------------------------
-    # Recalculate / update UI
-    # -------------------------
+    # ------------------------------------------------------------------ #
+    # Recalcular y actualizar resultados
+    # ------------------------------------------------------------------ #
     def _recalculate_and_update(self):
-        currency_totals = {}
+        currency_totals: dict[str, float] = {}
         grand_total_rd = 0.0
         currency_symbols = {"USD": "$", "EUR": "€", "RD$": "RD$"}
 
@@ -353,11 +592,15 @@ class AdvancedRetentionWindowQt(QDialog):
             if not id_item:
                 continue
             inv_id = int(id_item.data(Qt.ItemDataRole.UserRole))
-            invoice_data = next((i for i in self.all_invoices if int(i.get("id")) == inv_id), None)
+            invoice_data = next(
+                (i for i in self.all_invoices if int(i.get("id")) == inv_id), None
+            )
             if not invoice_data:
                 continue
 
-            state = self.tree_item_states.get(inv_id, {"selected": False, "retention": False})
+            state = self.tree_item_states.get(
+                inv_id, {"selected": False, "retention": False}
+            )
             selected = state.get("selected", False)
             retention = state.get("retention", False)
 
@@ -399,7 +642,7 @@ class AdvancedRetentionWindowQt(QDialog):
             except Exception:
                 pass
 
-        # update results widget (per currency and grand total RD$)
+        # Limpiar resultados previos
         for i in reversed(range(self.results_layout.count())):
             w = self.results_layout.itemAt(i).widget()
             if w:
@@ -407,48 +650,94 @@ class AdvancedRetentionWindowQt(QDialog):
 
         if not currency_totals:
             lbl = QLabel("RD$ 0.00")
-            lbl.setStyleSheet("font-weight: bold;")
+            lbl.setStyleSheet(
+                "font-weight: 600; font-size: 13px; color: #111827;"
+            )
             self.results_layout.addWidget(lbl)
             return
 
         for currency, total in sorted(currency_totals.items()):
             symbol = currency_symbols.get(currency, currency)
-            row = QHBoxLayout()
-            label = QLabel(f"Suma Total Impuestos ({currency}):")
-            value = QLabel(f"{symbol} {total:,.2f}")
-            value.setStyleSheet("font-weight: bold;")
+
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(4, 2, 4, 2)
+            row_layout.setSpacing(6)
+
+            badge = QLabel(currency)
+            badge.setStyleSheet(
+                """
+                QLabel {
+                    background-color: #EEF2FF;
+                    color: #4F46E5;
+                    border-radius: 10px;
+                    padding: 2px 8px;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+                """
+            )
+
+            label = QLabel("Suma Total Impuestos:")
+            label.setStyleSheet("font-size: 12px; color: #4B5563;")
+
+            value = QLabel(f"{symbol} {total:,.2f}")
+            value.setStyleSheet(
+                "font-weight: 600; font-size: 13px; color: #111827;"
+            )
+
+            row_layout.addWidget(badge)
+            row_layout.addSpacing(4)
             row_layout.addWidget(label)
             row_layout.addStretch()
             row_layout.addWidget(value)
+
             self.results_layout.addWidget(row_widget)
 
         sep_widget = QWidget()
         sep_layout = QHBoxLayout(sep_widget)
+        sep_layout.setContentsMargins(0, 4, 0, 4)
         sep_layout.addStretch()
         self.results_layout.addWidget(sep_widget)
 
         gt_row = QWidget()
         gt_layout = QHBoxLayout(gt_row)
+        gt_layout.setContentsMargins(4, 0, 4, 0)
+        gt_layout.setSpacing(4)
+
         gt_label = QLabel("GRAN TOTAL (CONVERTIDO A RD$):")
+        gt_label.setStyleSheet(
+            "font-size: 12px; font-weight: 600; color: #111827;"
+        )
         gt_value = QLabel(f"RD$ {grand_total_rd:,.2f}")
-        gt_value.setStyleSheet("font-weight: bold; color: blue;")
+        gt_value.setStyleSheet(
+            "font-weight: 700; font-size: 14px; color: #1D4ED8;"
+        )
+
         gt_layout.addWidget(gt_label)
         gt_layout.addStretch()
         gt_layout.addWidget(gt_value)
+
         self.results_layout.addWidget(gt_row)
 
-    # -------------------------
-    # Save calculation
-    # -------------------------
+    # ------------------------------------------------------------------ #
+    # Guardar cálculo
+    # ------------------------------------------------------------------ #
     def _save_calculation(self):
         if not any(s.get("selected", False) for s in self.tree_item_states.values()):
-            QMessageBox.warning(self, "Nada que guardar", "Debes seleccionar al menos una factura para guardar el cálculo.")
+            QMessageBox.warning(
+                self,
+                "Nada que guardar",
+                "Debes seleccionar al menos una factura para guardar el cálculo.",
+            )
             return
 
         if not self.calculation_id and not self.calculation_name:
-            name, ok = QInputDialog.getText(self, "Nombre del Cálculo", "Introduce un nombre para guardar esta configuración:")
+            name, ok = QInputDialog.getText(
+                self,
+                "Nombre del Cálculo",
+                "Introduce un nombre para guardar esta configuración:",
+            )
             if not ok or not name:
                 return
             self.calculation_name = name
@@ -472,7 +761,7 @@ class AdvancedRetentionWindowQt(QDialog):
                 start_date=self.start_date.date().toString("yyyy-MM-dd"),
                 end_date=self.end_date.date().toString("yyyy-MM-dd"),
                 percent=percent_val,
-                details=self.tree_item_states
+                details=self.tree_item_states,
             )
             if success:
                 QMessageBox.information(self, "Éxito", message)
@@ -480,86 +769,106 @@ class AdvancedRetentionWindowQt(QDialog):
             else:
                 QMessageBox.critical(self, "Error", message)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudo guardar el cálculo: {e}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"No se pudo guardar el cálculo: {e}",
+            )
 
-    # -------------------------
-    # Export PDF
-    # -------------------------
+    # ------------------------------------------------------------------ #
+    # Exportar PDF (integrado con LogicControllerFirebase / report_generator)
+    # ------------------------------------------------------------------ #
     def _export_pdf(self):
         if not any(s.get("selected", False) for s in self.tree_item_states.values()):
-            QMessageBox.warning(self, "Sin Selección", "Debes seleccionar al menos una factura para generar el reporte.")
+            QMessageBox.warning(
+                self,
+                "Sin Selección",
+                "Debes seleccionar al menos una factura para generar el reporte.",
+            )
             return
 
-        # PyQt6: No usar QFileDialog.Options() (ya no existe)
-        fname, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Guardar Reporte de Impuestos", 
-            f"Reporte_Impuestos_{datetime.now():%Y%m%d}.pdf", 
-            "PDF Files (*.pdf)"
+        # Si el cálculo aún no existe, forzamos un guardado rápido
+        if not self.calculation_id:
+            if not self.calculation_name:
+                name, ok = QInputDialog.getText(
+                    self,
+                    "Nombre del Cálculo",
+                    "Antes de exportar, introduce un nombre para guardar este cálculo:",
+                )
+                if not ok or not name:
+                    return
+                self.calculation_name = name
+
+            company_id = None
+            try:
+                company_id = self.parent.get_current_company_id()
+            except Exception:
+                company_id = None
+
+            try:
+                percent_val = float(self.percent_to_pay_edit.text() or "0")
+            except Exception:
+                percent_val = 0.0
+
+            try:
+                success, message = self.controller.save_tax_calculation(
+                    calc_id=self.calculation_id,
+                    company_id=company_id,
+                    name=self.calculation_name,
+                    start_date=self.start_date.date().toString("yyyy-MM-dd"),
+                    end_date=self.end_date.date().toString("yyyy-MM-dd"),
+                    percent=percent_val,
+                    details=self.tree_item_states,
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"No se pudo guardar el cálculo antes de exportar: {e}",
+                )
+                return
+
+            if not success:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    message or "No se pudo guardar el cálculo antes de exportar.",
+                )
+                return
+
+            # Nota: para tener un ID concreto tras guardar, puedes extender
+            # save_tax_calculation para que devuelva también calc_id.
+            # Aquí asumimos que si calculation_id era None, el usuario volverá
+            # a abrir desde la ventana de gestión para un PDF “persistente”.
+            if not self.calculation_id:
+                QMessageBox.information(
+                    self,
+                    "Cálculo guardado",
+                    "El cálculo se guardó correctamente. "
+                    "Para generar un PDF asociado a un ID fijo en Firebase, "
+                    "abre este cálculo desde la ventana de gestión y exporta de nuevo.",
+                )
+                return
+
+        # Si el controller tiene helper dedicado, lo usamos
+        if hasattr(self.controller, "open_tax_calculation_pdf"):
+            try:
+                self.controller.open_tax_calculation_pdf(
+                    self.calculation_id,
+                    parent=self,
+                )
+                return
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"No se pudo generar el PDF: {e}",
+                )
+                return
+
+        # Fallback si el controller no implementa el helper
+        QMessageBox.warning(
+            self,
+            "Exportar PDF",
+            "El controlador actual no implementa 'open_tax_calculation_pdf'.",
         )
-        if not fname:
-            return
-
-        selected_invoices_data = []
-        currency_totals = {}
-        grand_total_rd = 0.0
-        try:
-            percent = float(self.percent_to_pay_edit.text() or "0") / 100.0
-        except Exception:
-            percent = 0.0
-
-        for inv_id, state in self.tree_item_states.items():
-            if not state.get("selected"):
-                continue
-            invoice_data = next((i for i in self.all_invoices if int(i.get("id")) == int(inv_id)), None)
-            if not invoice_data:
-                continue
-
-            itbis_orig = float(invoice_data.get("itbis", 0.0))
-            total_orig = float(invoice_data.get("total_amount", 0.0))
-            valor_retencion_orig = itbis_orig * 0.30 if state.get("retention") else 0.0
-            monto_a_pagar_orig = total_orig * percent
-            total_impuestos_row_orig = (itbis_orig - valor_retencion_orig) + monto_a_pagar_orig
-
-            rate = float(invoice_data.get("exchange_rate", 1.0) or 1.0)
-            total_rd = total_orig * rate
-            total_impuestos_row_rd = total_impuestos_row_orig * rate
-
-            selected_invoices_data.append({
-                "fecha": invoice_data.get("invoice_date"),
-                "no_fact": invoice_data.get("invoice_number"),
-                "empresa": invoice_data.get("third_party_name"),
-                "currency": invoice_data.get("currency"),
-                "exchange_rate": rate,
-                "total_orig": total_orig,
-                "total_rd": total_rd,
-                "total_imp_orig": total_impuestos_row_orig,
-                "total_imp_rd": total_impuestos_row_rd,
-            })
-
-            currency_totals.setdefault(invoice_data.get("currency"), 0.0)
-            currency_totals[invoice_data.get("currency")] += total_impuestos_row_orig
-            grand_total_rd += total_impuestos_row_rd
-
-        summary_data = {
-            "percent_to_pay": self.percent_to_pay_edit.text(),
-            "currency_totals": currency_totals,
-            "grand_total_rd": grand_total_rd
-        }
-
-        company_name = ""
-        try:
-            company_name = self.parent.company_selector.currentText()
-        except Exception:
-            company_name = ""
-
-        periodo_str = f"Desde {self.start_date.date().toString('yyyy-MM-dd')} hasta {self.end_date.date().toString('yyyy-MM-dd')}"
-
-        try:
-            ok, msg = report_generator.generate_advanced_retention_pdf(fname, company_name, periodo_str, summary_data, selected_invoices_data)
-            if ok:
-                QMessageBox.information(self, "Éxito", msg)
-            else:
-                QMessageBox.critical(self, "Error", msg)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudo generar el reporte: {e}")
